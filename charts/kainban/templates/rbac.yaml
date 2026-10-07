@@ -1,0 +1,31 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kainban.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kainban.labels" . | nindent 4 }}
+rules:
+  # kainban stores agent credentials as Secrets in its own namespace.
+  # Deliberately no "delete": revoking credentials is a manual action.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kainban.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kainban.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kainban.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kainban.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

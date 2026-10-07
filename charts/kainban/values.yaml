@@ -1,0 +1,76 @@
+# Default values for kainban.
+
+# The image is published multi-arch (linux/amd64 + linux/arm64), so the pod
+# can be scheduled on any node of a mixed-architecture cluster without a
+# nodeSelector on kubernetes.io/arch.
+image:
+  repository: ghcr.io/zerosuxx/kainban
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Create a ServiceAccount for the orchestrator.
+  create: true
+  # Name to use; generated from the fullname when empty.
+  name: ""
+  annotations: {}
+
+rbac:
+  # Create a Role/RoleBinding granting secrets get/list/watch/create/update/patch
+  # (no delete) in the release namespace. kainban stores credentials there.
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+# Extra environment variables for the kainban container, e.g.
+#   - name: KAINBAN_LOG_LEVEL
+#     value: debug
+extraEnv: []
+
+# Size limit of the emptyDir mounted at /tmp.
+tmp:
+  sizeLimit: 1Gi
+
+# Optional persistent state at /home/ubuntu/.local/state/kainban.
+# Credentials themselves always live in Secrets; this only keeps local state
+# across pod restarts.
+persistence:
+  enabled: false
+  # Use an existing PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

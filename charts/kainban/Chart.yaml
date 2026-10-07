@@ -1,0 +1,9 @@
+apiVersion: v2
+name: kainban
+description: kAinban orchestrator - bootstraps agent CLI credentials (Claude Code, Codex, GitHub, Copilot, Antigravity) as Kubernetes Secrets.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/zerosuxx/kAinban
+sources:
+  - https://github.com/zerosuxx/kAinban

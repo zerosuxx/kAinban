@@ -1,0 +1,18 @@
+kAinban orchestrator {{ .Chart.AppVersion }} is deployed in namespace {{ .Release.Namespace }}.
+
+Wait for the pod to become ready:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "kainban.fullname" . }}
+
+Then bootstrap the agent credentials interactively:
+
+  kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "kainban.fullname" . }} -- kainban auth
+
+Check stored credentials non-interactively (exit 1 if any is invalid):
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kainban.fullname" . }} -- kainban auth check --live
+{{- if not .Values.rbac.create }}
+
+NOTE: rbac.create=false - make sure ServiceAccount "{{ include "kainban.serviceAccountName" . }}"
+can get/list/watch/create/update/patch Secrets in {{ .Release.Namespace }}.
+{{- end }}

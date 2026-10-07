@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kainban.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kainban.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # A single interactive orchestrator; never run two side by side.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "kainban.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kainban.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kainban.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: kainban
+          image: {{ include "kainban.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The image's CMD keeps the pod idle; users exec into it.
+          stdin: true
+          tty: true
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.persistence.enabled }}
+            - name: state
+              mountPath: /home/ubuntu/.local/state/kainban
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmp.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-state" (include "kainban.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

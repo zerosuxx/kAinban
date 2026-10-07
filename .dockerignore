@@ -1,0 +1,10 @@
+.git
+.github
+experiments
+charts
+dist
+kainban
+*.out
+*.md
+Dockerfile
+.dockerignore
