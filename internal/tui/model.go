@@ -54,6 +54,9 @@ type flowState struct {
 	lastInput string     // what was last submitted, for retries
 	done      *auth.Step // StepDone whose save failed, for retry
 	input     textinput.Model
+	url       string // first URL in the current step's Body
+	urlFile   string // where url was also written, if that worked
+	copied    bool   // ctrl+y pressed for this step
 }
 
 type model struct {

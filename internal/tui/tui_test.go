@@ -351,17 +351,17 @@ func TestQuitClosesFlow(t *testing.T) {
 func TestWrapKeepsURLs(t *testing.T) {
 	url := "https://auth.openai.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A1455&state=" + strings.Repeat("x", 80)
 	out := wrapText("Open this link in your browser to sign in: "+url+" and then paste the code below please.", 30)
-	found := false
+	var urlLines []string
 	for _, line := range strings.Split(out, "\n") {
-		if line == url {
-			found = true
-		}
-		if line != url && len(line) > 30 {
+		if len(line) > 30 {
 			t.Errorf("line too long: %q", line)
 		}
+		if strings.HasPrefix(line, "https://") || len(urlLines) > 0 && len(strings.Join(urlLines, "")) < len(url) {
+			urlLines = append(urlLines, line)
+		}
 	}
-	if !found {
-		t.Fatalf("URL not on its own line:\n%s", out)
+	if strings.Join(urlLines, "") != url {
+		t.Fatalf("URL not on its own consecutive lines:\n%s", out)
 	}
 }
 
@@ -369,5 +369,19 @@ func TestTitleShowsAppVersion(t *testing.T) {
 	m := newModel(context.Background(), nil, nil, Options{AppVersion: "1.2.3"})
 	if v := m.overviewView(); !strings.Contains(v, "1.2.3") {
 		t.Fatalf("app version missing from title: %q", v)
+	}
+}
+
+func TestWrapTextHardWrapsLongURL(t *testing.T) {
+	url := "https://auth.openai.com/oauth/authorize?" + strings.Repeat("a=b&", 40)
+	got := wrapText("Open:\n"+url, 30)
+	lines := strings.Split(got, "\n")
+	if strings.Join(lines[1:], "") != url {
+		t.Fatalf("URL not preserved: %q", got)
+	}
+	for _, l := range lines {
+		if len(l) > 30 {
+			t.Fatalf("line longer than width: %q", l)
+		}
 	}
 }

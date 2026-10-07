@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -103,6 +104,14 @@ func (m *model) updateFlowMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fs.err = nil
 		step := msg.step
 		m.fs.step = &step
+		m.fs.url, m.fs.urlFile, m.fs.copied = firstURL(step.Body), "", false
+		if m.fs.url != "" {
+			// Fallback for terminals without OSC 52: read it from another shell.
+			f := filepath.Join(os.TempDir(), "kainban-url.txt")
+			if os.WriteFile(f, []byte(m.fs.url+"\n"), 0o600) == nil {
+				m.fs.urlFile = f
+			}
+		}
 		switch step.Kind {
 		case auth.StepInput:
 			in := textinput.New()
@@ -165,6 +174,12 @@ func (m *model) updateFlowKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.leaveFlow()
 	case "ctrl+s":
 		return m.skip()
+	case "ctrl+y":
+		if m.fs.url != "" {
+			m.fs.copied = true
+			return m, tea.SetClipboard(m.fs.url)
+		}
+		return m, nil
 	case "s":
 		if !typing {
 			return m.skip()
@@ -234,6 +249,16 @@ func (m *model) flowView() string {
 	if m.fs.execErr != nil {
 		b.WriteString("\n" + errorStyle.Render(wrapText("command failed: "+m.fs.execErr.Error(), width)) + "\n")
 	}
+	if m.fs.url != "" {
+		hint := "ctrl+y copies the URL to your clipboard (OSC 52)"
+		if m.fs.copied {
+			hint = "URL sent to the clipboard (needs OSC 52 support in your terminal)"
+		}
+		if m.fs.urlFile != "" {
+			hint += "; it is also in " + m.fs.urlFile + " (kubectl exec <pod> -- cat " + m.fs.urlFile + ")"
+		}
+		b.WriteString(subtleStyle.Render(wrapText(hint, width)) + "\n")
+	}
 	if m.fs.err != nil {
 		b.WriteString("\n" + errorStyle.Render(wrapText("error: "+m.fs.err.Error(), width)) + "\n")
 		if m.fs.busy == "" {
@@ -249,6 +274,9 @@ func (m *model) flowView() string {
 		help += " · ctrl+s skip to next"
 	} else {
 		help += " · ctrl+s skip"
+	}
+	if m.fs.url != "" {
+		help += " · ctrl+y copy URL"
 	}
 	help += " · ctrl+c quit"
 	b.WriteString("\n" + helpStyle.Render(help))

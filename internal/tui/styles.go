@@ -58,7 +58,13 @@ func wrapText(s string, width int) string {
 		}
 		for _, w := range words {
 			if isURL(w) {
+				// Own line(s), hard-wrapped: the renderer would cut a longer
+				// line, and browsers drop the line breaks when pasting.
 				flush()
+				for len(w) > width {
+					out = append(out, w[:width])
+					w = w[width:]
+				}
 				out = append(out, w)
 				continue
 			}
@@ -79,6 +85,16 @@ func wrapText(s string, width int) string {
 
 func isURL(w string) bool {
 	return strings.Contains(w, "://")
+}
+
+// firstURL returns the first URL in s, or "".
+func firstURL(s string) string {
+	for _, w := range strings.Fields(s) {
+		if isURL(w) {
+			return w
+		}
+	}
+	return ""
 }
 
 // titleBar renders "kAinban <version> · <section>", the version dimmed.
