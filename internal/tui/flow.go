@@ -111,6 +111,7 @@ func (m *model) updateFlowMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				in.Prompt = step.Prompt + " "
 			}
 			in.Placeholder = step.Placeholder
+			in.SetValue(step.Value)
 			if step.Secret {
 				in.EchoMode = textinput.EchoPassword
 			}

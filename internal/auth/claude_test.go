@@ -97,13 +97,22 @@ func TestClaudeFlow(t *testing.T) {
 	fixedNow(t, testNow)
 	f := NewClaude().NewFlow()
 	ctx := context.Background()
+	defer f.Close()
 	s, err := f.Next(ctx, "")
-	if err != nil || s.Kind != StepExec || strings.Join(s.Command, " ") != "claude setup-token" {
+	if err != nil || s.Kind != StepExec || len(s.Command) != 5 || s.Command[0] != "sh" ||
+		!strings.Contains(s.Command[2], "claude setup-token") {
 		t.Fatalf("%+v %v", s, err)
 	}
-	s, err = f.Next(ctx, "")
-	if err != nil || s.Kind != StepInput || !s.Secret || !strings.Contains(s.Body, "ANTHROPIC_API_KEY") {
+	typescript := s.Command[4]
+	if _, err := os.Stat(typescript); err != nil {
+		t.Fatalf("typescript file: %v", err)
+	}
+	s, err = f.Next(ctx, "") // nothing captured: plain paste step
+	if err != nil || s.Kind != StepInput || !s.Secret || s.Value != "" || !strings.Contains(s.Body, "ANTHROPIC_API_KEY") {
 		t.Fatalf("%+v %v", s, err)
+	}
+	if _, err := os.Stat(typescript); !os.IsNotExist(err) {
+		t.Fatalf("typescript not removed: %v", err)
 	}
 	if _, err := f.Next(ctx, "sk-ant-api03-nope"); err == nil {
 		t.Fatal("want prefix error")
@@ -131,5 +140,42 @@ func TestRegistry(t *testing.T) {
 	}
 	if got := strings.Join(ids, ","); got != "claude,codex,github,copilot,antigravity" {
 		t.Fatalf("order = %s", got)
+	}
+}
+
+func TestClaudeFlowCapturesToken(t *testing.T) {
+	fixedNow(t, testNow)
+	f := NewClaude().NewFlow()
+	defer f.Close()
+	ctx := context.Background()
+	s, _ := f.Next(ctx, "")
+	tok := ClaudeTokenPrefix + strings.Repeat("Ab3_-", 20)
+	out := "\x1b[32mLong-lived token created:\x1b[0m\r\n\r\n" + tok + "\r\n\r\nStore this token securely.\r\n"
+	if err := os.WriteFile(s.Command[4], []byte(out), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := f.Next(ctx, "")
+	if err != nil || s.Kind != StepInput || s.Value != tok || strings.Contains(s.Body, tok) {
+		t.Fatalf("value=%q body=%q err=%v", s.Value, s.Body, err)
+	}
+}
+
+func TestExtractClaudeToken(t *testing.T) {
+	tok := ClaudeTokenPrefix + strings.Repeat("xY9-_", 18)
+	half := len(tok) / 2
+	cases := []struct{ name, in, want string }{
+		{"plain", "token:\n" + tok + "\n\nStore this token securely.", tok},
+		{"ansi", "\x1b[1m\x1b[38;5;10m" + tok + "\x1b[39m\x1b[22m\r\n", tok},
+		{"wrapped", "  " + tok[:half] + "\r\n  " + tok[half:] + "  \r\n\r\nStore this", tok},
+		{"same line text", tok + " (valid for 1 year)", tok},
+		{"last wins", ClaudeTokenPrefix + strings.Repeat("old00", 18) + "\n" + tok + "\n", tok},
+		{"osc title", "\x1b]0;claude\x07" + tok + "\n", tok},
+		{"none", "Error: login failed\n", ""},
+		{"too short", ClaudeTokenPrefix + "abc\n", ""},
+	}
+	for _, c := range cases {
+		if got := extractClaudeToken(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
 	}
 }

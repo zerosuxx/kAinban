@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -138,26 +139,62 @@ func firstLine(s string) string {
 	return ""
 }
 
-type claudeFlow struct{ step int }
+type claudeFlow struct {
+	step       int
+	typescript string // `script` recording of `claude setup-token`
+}
 
-func (f *claudeFlow) Close() error { return nil }
+func (f *claudeFlow) Close() error {
+	if f.typescript != "" {
+		os.Remove(f.typescript)
+		f.typescript = ""
+	}
+	return nil
+}
+
+// claudeSetupScript runs `claude setup-token` under `script`, so its output
+// (the token) is recorded to $1, then waits for Enter: the TUI switches back
+// to its alternate screen on return, which would hide the printed token.
+const claudeSetupScript = `if command -v script >/dev/null 2>&1; then
+  script -q -c "claude setup-token" "$1"
+else
+  claude setup-token
+fi
+printf '\n\nkAinban: press Enter to return (the token will be filled in for you)... '
+read -r _`
 
 func (f *claudeFlow) Next(ctx context.Context, input string) (Step, error) {
 	switch f.step {
 	case 0:
+		ts, err := os.CreateTemp("", "kainban-claude-*.typescript")
+		if err != nil {
+			return Step{}, fmt.Errorf("create temp file: %w", err)
+		}
+		ts.Close()
+		f.typescript = ts.Name()
 		f.step = 1
 		return Step{
 			Kind:  StepExec,
 			Title: "Claude Code: create a long-lived token",
 			Body: "kAinban will now run `claude setup-token`. Open the URL it shows in a browser, " +
 				"sign in and paste the code back if asked.\n\n" +
-				"It then PRINTS a token starting with " + ClaudeTokenPrefix + " (valid for 1 year) and does " +
-				"not save it anywhere: copy the printed token before continuing.",
-			Command: []string{"claude", "setup-token"},
+				"It then prints a token starting with " + ClaudeTokenPrefix + " (valid for 1 year). " +
+				"kAinban records the output and fills the token in for you; press Enter when asked to return.",
+			Command: []string{"sh", "-c", claudeSetupScript, "sh", f.typescript},
 		}, nil
 	case 1:
 		f.step = 2
-		return f.inputStep(), nil
+		step := f.inputStep()
+		if out, err := os.ReadFile(f.typescript); err == nil {
+			if tok := extractClaudeToken(string(out)); tok != "" {
+				step.Value = tok
+				step.Body = "Captured the token printed by `claude setup-token` (…" + tok[len(tok)-4:] +
+					"). Press Enter to save it, or paste another one.\n\n" +
+					"Note: ANTHROPIC_API_KEY, if set in an agent's environment, overrides this token."
+			}
+		}
+		f.Close()
+		return step, nil
 	default:
 		tok := normalizeToken(input)
 		if err := validateClaudeToken(tok); err != nil {
@@ -188,4 +225,48 @@ func (f *claudeFlow) inputStep() Step {
 		Placeholder: ClaudeTokenPrefix + "...",
 		Secret:      true,
 	}
+}
+
+var (
+	ansiSeq        = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
+	tokenLineChars = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
+
+// extractClaudeToken finds the last token printed in a `script` recording of
+// `claude setup-token`. Escape sequences are stripped; a token wrapped over
+// several lines is joined while the following lines contain token characters
+// only.
+func extractClaudeToken(typescript string) string {
+	s := strings.ReplaceAll(ansiSeq.ReplaceAllString(typescript, ""), "\r", "\n")
+	i := strings.LastIndex(s, ClaudeTokenPrefix)
+	if i < 0 {
+		return ""
+	}
+	lines := strings.Split(s[i:], "\n")
+	tok := strings.TrimSpace(lines[0])
+	if j := strings.IndexFunc(tok, func(r rune) bool { return !isTokenRune(r) }); j >= 0 {
+		return validOrEmpty(tok[:j])
+	}
+	for _, l := range lines[1:] {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue // `script` turns \r\n into an empty line
+		}
+		if !tokenLineChars.MatchString(l) {
+			break
+		}
+		tok += l
+	}
+	return validOrEmpty(tok)
+}
+
+func isTokenRune(r rune) bool {
+	return r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
+func validOrEmpty(tok string) string {
+	if len(tok) < len(ClaudeTokenPrefix)+20 || validateClaudeToken(tok) != nil {
+		return ""
+	}
+	return tok
 }

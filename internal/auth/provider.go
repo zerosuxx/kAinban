@@ -93,7 +93,8 @@ type Step struct {
 	// StepInput
 	Prompt      string
 	Placeholder string
-	Secret      bool // mask the input (tokens, keys)
+	Secret      bool   // mask the input (tokens, keys)
+	Value       string // pre-filled value (e.g. a token captured from a command)
 
 	// StepExec
 	Command []string
