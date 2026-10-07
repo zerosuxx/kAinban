@@ -115,6 +115,12 @@ type Flow interface {
 	Close() error
 }
 
+// StoreAware is implemented by flows that read existing Secrets, e.g. to
+// pre-fill a value; the TUI calls UseStore before the first Next.
+type StoreAware interface {
+	UseStore(Store)
+}
+
 // Provider is one CLI whose credentials kAinban manages.
 type Provider interface {
 	ID() string    // stable, e.g. "codex"; used in labels and flags

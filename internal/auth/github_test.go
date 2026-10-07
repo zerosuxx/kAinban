@@ -223,3 +223,40 @@ func TestCopilotTokens(t *testing.T) {
 		t.Fatalf("classic token: %v", st.State)
 	}
 }
+
+func TestCopilotPrefill(t *testing.T) {
+	orig := ghAuthToken
+	t.Cleanup(func() { ghAuthToken = orig })
+	ctx := context.Background()
+	gho := "gho_" + strings.Repeat("a", 36)
+
+	cases := []struct {
+		name, ghOut, secret, want, source string
+	}{
+		{"gh cli wins", gho, "gho_other0000000000000000000000000000", gho, "`gh auth token`"},
+		{"from github secret", "", gho, gho, "Secret " + GitHubSecretName},
+		{"fine-grained not reused", "", "github_pat_" + strings.Repeat("b", 30), "", ""},
+		{"gh pat ignored", "github_pat_x", "", "", ""},
+		{"nothing", "", "", "", ""},
+	}
+	for _, c := range cases {
+		ghAuthToken = func(context.Context) string { return c.ghOut }
+		store := newFakeStore()
+		if c.secret != "" {
+			store.with(GitHubSecretName, GitHubTokenKey, c.secret, nil)
+		}
+		tok, source := copilotPrefill(ctx, store)
+		if tok != c.want || source != c.source {
+			t.Errorf("%s: got %q from %q, want %q from %q", c.name, tok, source, c.want, c.source)
+		}
+	}
+
+	// The flow shows the pre-filled token as the input's value, never in the body.
+	ghAuthToken = func(context.Context) string { return "" }
+	f := NewCopilot().NewFlow()
+	f.(StoreAware).UseStore(newFakeStore().with(GitHubSecretName, GitHubTokenKey, gho, nil))
+	s, err := f.Next(ctx, "")
+	if err != nil || s.Value != gho || strings.Contains(s.Body, gho) || !strings.Contains(s.Body, "Pre-filled") {
+		t.Fatalf("value=%q body=%q err=%v", s.Value, s.Body, err)
+	}
+}

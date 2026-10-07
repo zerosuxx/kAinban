@@ -57,3 +57,6 @@ func makeJWT(t *testing.T, claims map[string]any) string {
 	enc := base64.RawURLEncoding
 	return enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + enc.EncodeToString(b) + ".c2ln"
 }
+
+// Keep tests hermetic: never shell out to a real, possibly logged-in `gh`.
+func init() { ghAuthToken = func(context.Context) string { return "" } }

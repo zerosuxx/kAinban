@@ -36,6 +36,10 @@ type gitHubTokenProvider struct {
 
 	client  *http.Client
 	baseURL string
+
+	// prefill, if set, proposes a token for the input (source describes
+	// where it came from); store may be nil.
+	prefill func(ctx context.Context, store Store) (tok, source string)
 }
 
 // NewGitHub returns the GitHub provider (GH_TOKEN for git/gh).
@@ -188,22 +192,33 @@ func (p *gitHubTokenProvider) Check(ctx context.Context, store Store, live bool)
 
 type gitHubTokenFlow struct {
 	p       *gitHubTokenProvider
+	store   Store
 	started bool
 }
+
+func (f *gitHubTokenFlow) UseStore(s Store) { f.store = s }
 
 func (f *gitHubTokenFlow) Close() error { return nil }
 
 func (f *gitHubTokenFlow) Next(ctx context.Context, input string) (Step, error) {
 	if !f.started {
 		f.started = true
-		return Step{
+		step := Step{
 			Kind:        StepInput,
 			Title:       f.p.inputTitle,
 			Body:        f.p.inputBody,
 			Prompt:      "Token",
 			Placeholder: f.p.placeholder,
 			Secret:      true,
-		}, nil
+		}
+		if f.p.prefill != nil {
+			if tok, source := f.p.prefill(ctx, f.store); tok != "" {
+				step.Value = tok
+				step.Body = "Pre-filled with the token from " + source + " (…" + tok[len(tok)-4:] +
+					"). Press Enter to use it, or paste another one.\n\n" + step.Body
+			}
+		}
+		return step, nil
 	}
 	tok := normalizeToken(input)
 	if err := f.p.checkFormat(tok); err != nil {

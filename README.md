@@ -31,10 +31,10 @@ of them in order, or pick one; `ctrl+s` skips the current step. Providers:
 
 | Provider | How you log in |
 | --- | --- |
-| Claude Code | `claude setup-token` runs in the pod; open the printed URL, approve, paste the code back. |
+| Claude Code | `claude setup-token` runs in the pod; open the printed URL, approve, paste the code back. kAinban captures the printed token and pre-fills it. |
 | Codex | Browser login with a manually pasted callback URL (see below). |
 | GitHub | Paste a fine-grained personal access token. |
-| GitHub Copilot CLI | Paste a Copilot CLI token. |
+| GitHub Copilot CLI | Pre-filled with the GitHub CLI OAuth token (`gho_`, from `gh auth token` or the `kainban-github` Secret) when available; otherwise paste a fine-grained token with *Copilot Requests*. |
 | Antigravity / Gemini | Paste a Gemini API key. |
 
 **Codex callback URL, step by step.** Codex's browser login starts a callback

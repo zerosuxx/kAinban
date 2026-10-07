@@ -1,6 +1,12 @@
 package auth
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+	"os/exec"
+	"strings"
+	"time"
+)
 
 // GitHub Copilot CLI credentials. The CLI reads COPILOT_GITHUB_TOKEN before
 // GH_TOKEN and GITHUB_TOKEN.
@@ -32,5 +38,35 @@ func newCopilot(client *http.Client, baseURL string) *gitHubTokenProvider {
 		placeholder: "github_pat_...",
 		client:      client,
 		baseURL:     baseURL,
+		prefill:     copilotPrefill,
 	}
+}
+
+// ghAuthToken runs `gh auth token`; replaced in tests.
+var ghAuthToken = func(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// copilotPrefill proposes the GitHub CLI OAuth token (gho_), which the
+// Copilot CLI accepts: from `gh auth token`, else from the GitHub step's
+// Secret. Fine-grained PATs are not reused, as they usually lack the
+// Copilot Requests permission.
+func copilotPrefill(ctx context.Context, store Store) (string, string) {
+	if tok := ghAuthToken(ctx); strings.HasPrefix(tok, "gho_") {
+		return tok, "`gh auth token`"
+	}
+	if store != nil {
+		if s, err := store.Get(ctx, GitHubSecretName); err == nil {
+			if tok := strings.TrimSpace(string(s.Data[GitHubTokenKey])); strings.HasPrefix(tok, "gho_") {
+				return tok, "Secret " + GitHubSecretName
+			}
+		}
+	}
+	return "", ""
 }

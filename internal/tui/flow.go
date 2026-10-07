@@ -24,6 +24,9 @@ func (m *model) startFlow(idx int) tea.Cmd {
 		flow: m.providers[idx].NewFlow(),
 		gen:  m.flowGen,
 	}
+	if sa, ok := m.fs.flow.(auth.StoreAware); ok {
+		sa.UseStore(m.store)
+	}
 	return m.nextCmd("")
 }
 
