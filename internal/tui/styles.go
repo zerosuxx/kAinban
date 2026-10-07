@@ -83,9 +83,9 @@ func isURL(w string) bool {
 
 // titleBar renders "kAinban <version> · <section>", the version dimmed.
 func (m *model) titleBar(section string) string {
-	s := titleStyle.Render("kAinban")
-	if v := m.opts.AppVersion; v != "" {
-		s += " " + subtleStyle.Render(v)
+	v := m.opts.AppVersion
+	if v == "" {
+		return titleStyle.Render("kAinban · " + section)
 	}
-	return s + titleStyle.Render(" · "+section)
+	return titleStyle.Render("kAinban") + " " + subtleStyle.Render(v) + titleStyle.Render(" · "+section)
 }

@@ -115,6 +115,11 @@ func (m *model) updateFlowMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				in.EchoMode = textinput.EchoPassword
 			}
 			in.SetWidth(max(m.width-len(in.Prompt)-2, 20))
+			// A static cursor avoids the endless blink ticker, which also
+			// keeps the synchronous test driver from looping.
+			styles := in.Styles()
+			styles.Cursor.Blink = false
+			in.SetStyles(styles)
 			focus := in.Focus()
 			m.fs.input = in
 			return m, focus
