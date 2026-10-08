@@ -73,7 +73,7 @@ func newEditForm(t *board.Ticket, width int, focus formField) *editForm {
 		return get(t)
 	}
 	f.title = newTextInput(value(func(t *board.Ticket) string { return t.Title }), "what needs to be done", w)
-	f.model = newTextInput(value(func(t *board.Ticket) string { return t.Model }), "optional, e.g. claude-opus-5-5 or qwen3:4b for ollama (empty = the agent's default)", w)
+	f.model = newTextInput(value(func(t *board.Ticket) string { return t.Model }), modelPlaceholder(f.agent), w)
 	f.labels = newTextInput(value(func(t *board.Ticket) string { return strings.Join(t.Labels, ", ") }), "comma separated", w)
 	f.branch = newTextInput(value(func(t *board.Ticket) string { return t.Branch }), "optional", w)
 
@@ -135,7 +135,19 @@ func (f *editForm) cycle(delta int) {
 		i := slices.Index(board.AgentTypes, f.agent)
 		n := len(board.AgentTypes)
 		f.agent = board.AgentTypes[(i+delta+n)%n]
+		f.model.Placeholder = modelPlaceholder(f.agent)
 	}
+}
+
+// modelPlaceholder fits the model field from a 40 column screen up.
+func modelPlaceholder(a board.AgentType) string {
+	switch a {
+	case "claude":
+		return "default or claude-opus-5-5"
+	case "ollama":
+		return "default or e.g. qwen3:4b"
+	}
+	return "empty = agent default"
 }
 
 // formResult is what a key did to the form.

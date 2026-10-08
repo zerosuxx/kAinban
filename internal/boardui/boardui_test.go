@@ -961,3 +961,12 @@ func TestPopupsKeepKeyBarVisible(t *testing.T) {
 
 // The output view's refresh ticker would otherwise block run() for 2 s.
 func init() { logsInterval = time.Millisecond }
+
+func TestModelPlaceholderFits(t *testing.T) {
+	f := newEditForm(nil, 40, fieldTitle)
+	for _, a := range board.AgentTypes {
+		if p := modelPlaceholder(a); len(p) > f.model.Width() {
+			t.Errorf("%q: placeholder %q is wider than %d", a, p, f.model.Width())
+		}
+	}
+}
