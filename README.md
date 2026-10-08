@@ -95,7 +95,7 @@ the output.
 (moving skips it; moving out of it, or `s` to retry, goes back to In Progress), tickets as cards with priority, agent and
 branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new and
 `e` edit in a popup with every field (title, description, priority, agent,
-labels, branch; `tab` between fields, `ctrl+s` saves, `esc` cancels), `a` cycle the agent, `p` priority, `d` delete, `enter` details,
+labels, branch; `tab`/`shift+tab` or `↑`/`↓` between fields, `ctrl+s` saves, `esc` cancels), `a` cycle the agent, `p` priority, `d` delete, `enter` details,
 `?` help. The board is saved on every change to
 `~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
 `--file` overrides).

@@ -591,6 +591,40 @@ func TestProjectKeys(t *testing.T) {
 	}
 }
 
+func TestFormArrowKeys(t *testing.T) {
+	b := board.New("t")
+	b.Add("x")
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.width, m.height = 100, 40
+	m.Update(key("n"))
+	up, down := tea.KeyPressMsg{Code: tea.KeyUp}, tea.KeyPressMsg{Code: tea.KeyDown}
+	steps := []struct {
+		msg  tea.Msg
+		want formField
+	}{
+		{down, fieldDescription},
+		{key("a"), fieldDescription},
+		{key("enter"), fieldDescription}, // two lines now, cursor on the last
+		{up, fieldDescription},           // moves within the text
+		{up, fieldTitle},                 // first line: leaves the field
+		{down, fieldDescription},
+		{down, fieldDescription}, // first line: moves within the text
+		{down, fieldPriority},    // last line: leaves the field
+		{down, fieldAgent},
+		{up, fieldPriority},
+		{tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}, fieldDescription},
+	}
+	for i, s := range steps {
+		m.Update(s.msg)
+		if m.form.focus != s.want {
+			t.Fatalf("step %d: focus %s, want %s", i, fieldNames[m.form.focus], fieldNames[s.want])
+		}
+	}
+	if m.form.priority != 3 {
+		t.Fatalf("up/down changed the priority: %d", m.form.priority)
+	}
+}
+
 func TestEditPopup(t *testing.T) {
 	b := board.New("t")
 	x := b.Add("Old title")

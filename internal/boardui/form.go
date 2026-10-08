@@ -116,6 +116,17 @@ func (f *editForm) moveFocus(delta int) tea.Cmd {
 	return f.focusCmd()
 }
 
+// descAtTop and descAtBottom report whether the description cursor is on its
+// first or last visual row, where up/down leave the field.
+func (f *editForm) descAtTop() bool {
+	return f.desc.Line() == 0 && f.desc.LineInfo().RowOffset == 0
+}
+
+func (f *editForm) descAtBottom() bool {
+	li := f.desc.LineInfo()
+	return f.desc.Line() == f.desc.LineCount()-1 && li.RowOffset+1 >= li.Height
+}
+
 func (f *editForm) cycle(delta int) {
 	switch f.focus {
 	case fieldPriority:
@@ -157,10 +168,18 @@ func (f *editForm) update(msg tea.Msg) (formResult, tea.Cmd) {
 			if f.focus != fieldDescription { // enter is a newline in the description
 				return formEditing, f.moveFocus(1)
 			}
+		case "up":
+			if f.focus != fieldDescription || f.descAtTop() {
+				return formEditing, f.moveFocus(-1)
+			}
+		case "down":
+			if f.focus != fieldDescription || f.descAtBottom() {
+				return formEditing, f.moveFocus(1)
+			}
 		}
 		if f.focus == fieldPriority || f.focus == fieldAgent {
 			switch k.String() {
-			case "left", "h", "shift+tab":
+			case "left", "h":
 				f.cycle(-1)
 			case "right", "l", "space":
 				f.cycle(1)

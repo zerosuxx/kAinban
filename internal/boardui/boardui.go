@@ -652,7 +652,7 @@ func (m *model) confirmQuestion() string {
 func (m *model) footer() string {
 	switch m.mode {
 	case modeForm:
-		return subtle.Render("tab/shift+tab field · ←/→ change priority/agent · enter next field (newline in description) · ctrl+s save · esc cancel")
+		return subtle.Render("tab/shift+tab/↑/↓ field · ←/→ priority/agent · enter next field (newline in description) · ctrl+s save · esc cancel")
 	case modeConfirm:
 		return subtle.Render("y confirm · n/esc or any other key cancel")
 	case modeDetail:
