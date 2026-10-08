@@ -98,7 +98,10 @@ func startEmbedTerm(argv []string, ticketID string, shell bool, w, h int) (*embe
 		}
 		werr := cmd.Wait()
 		f.Close()
-		et.emu.Close()
+		// Ends the input copy. Not emu.Close: it races with Read in x/vt.
+		if c, ok := et.emu.InputPipe().(io.Closer); ok {
+			c.Close()
+		}
 		et.exited <- werr
 	}()
 	return et, nil
