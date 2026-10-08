@@ -159,9 +159,10 @@ func TestStatusFromAgentContainer(t *testing.T) {
 }
 
 func TestAttachCommand(t *testing.T) {
-	r := NewRunner(nil, Config{Namespace: "kb", KubectlArgs: []string{"--context", "c"}})
-	got := strings.Join(r.AttachCommand("p1", "codex", false), " ")
-	if !strings.HasPrefix(got, "kubectl --context c -n kb exec -it p1 -c shell -- sh -c") || !strings.Contains(got, "codex resume --last") {
+	r := NewRunner(nil, Config{Namespace: "kb", AttachArgs: []string{"--context", "c"}})
+	argv := r.AttachCommand("p1", "codex", false)
+	got := strings.Join(argv[1:], " ")
+	if !strings.HasPrefix(got, "attach --context c --namespace kb --pod p1 --container shell -- sh -c") || !strings.Contains(got, "codex resume --last") {
 		t.Fatalf("attach: %s", got)
 	}
 	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "exec bash") || strings.Contains(got, "bash -l") {

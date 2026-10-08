@@ -28,6 +28,9 @@ const usage = `Usage:
   kainban board [flags]         kanban board, s starts a ticket's agent pod
                                 (alias: kanban; --file PATH for the board file,
                                 --project XY for a new board's ticket keys XY-1, XY-2)
+  kainban attach [flags] --pod P [--container C] -- CMD
+                                run CMD in a pod with this terminal (like
+                                kubectl exec -it; used by the board's t/T)
   kainban shell [flags]         start a shell with the stored credentials
   kainban run [flags] -- CMD    run CMD with the stored credentials
   kainban version               print the version
@@ -120,6 +123,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return bad("unexpected arguments: %v", fs.Args())
 		}
 		return runBoard(ctx, cf, *file, *project, stderr)
+	case "attach":
+		var cf commonFlags
+		fs := newFlagSet(args[0])
+		cf.register(fs)
+		pod := fs.String("pod", "", "pod name")
+		container := fs.String("container", "", "container name")
+		if err := fs.Parse(args[1:]); err != nil {
+			return bad("%v", err)
+		}
+		if *pod == "" || fs.NArg() == 0 {
+			return bad("attach needs --pod and a command: kainban attach --pod P [--container C] -- CMD")
+		}
+		return runAttach(ctx, cf, *pod, *container, fs.Args(), stderr)
 	case "shell", "run":
 		var cf commonFlags
 		fs := newFlagSet(args[0])

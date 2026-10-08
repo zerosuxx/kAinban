@@ -34,7 +34,7 @@ type Config struct {
 	Namespace    string
 	Image        string
 	NodeSelector map[string]string
-	KubectlArgs  []string // e.g. --context/--kubeconfig, for AttachCommand
+	AttachArgs   []string // e.g. --context/--kubeconfig for `kainban attach`
 	// AgyModel is the --model for the Antigravity CLI ("" = its default;
 	// the Gemini API free tier has no quota for the Pro models).
 	AgyModel string
@@ -221,8 +221,9 @@ var resumeCommands = map[board.AgentType]string{
 	"antigravity": `agy --continue --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 }
 
-// AttachCommand is the kubectl invocation that opens the agent's session
-// (or, with shell, a plain shell) in the pod's shell container.
+// AttachCommand is the `kainban attach` invocation (client-go exec, no
+// kubectl needed) that opens the agent's session (or, with shell, a plain
+// shell) in the pod's shell container.
 func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []string {
 	inner := "cd /work && exec " + resumeCommands[agent]
 	if shell || resumeCommands[agent] == "" {
@@ -230,8 +231,12 @@ func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []
 		// which the image's busybox run-parts does not understand.
 		inner = "cd /work && exec bash"
 	}
-	argv := append([]string{"kubectl"}, r.cfg.KubectlArgs...)
-	return append(argv, "-n", r.cfg.Namespace, "exec", "-it", pod, "-c", shellContainer, "--", "sh", "-c", inner)
+	self, err := os.Executable()
+	if err != nil {
+		self = "kainban"
+	}
+	argv := append([]string{self, "attach"}, r.cfg.AttachArgs...)
+	return append(argv, "--namespace", r.cfg.Namespace, "--pod", pod, "--container", shellContainer, "--", "sh", "-c", inner)
 }
 
 // agentCommands is the headless invocation per agent; the prompt is in

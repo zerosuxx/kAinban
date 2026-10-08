@@ -28,10 +28,10 @@ func runBoard(ctx context.Context, cf commonFlags, path, project string, stderr 
 		opts.AgentsErr = err.Error()
 	} else {
 		if cf.kubeconfig != "" {
-			cfg.KubectlArgs = append(cfg.KubectlArgs, "--kubeconfig", cf.kubeconfig)
+			cfg.AttachArgs = append(cfg.AttachArgs, "--kubeconfig", cf.kubeconfig)
 		}
 		if cf.kubeContext != "" {
-			cfg.KubectlArgs = append(cfg.KubectlArgs, "--context", cf.kubeContext)
+			cfg.AttachArgs = append(cfg.AttachArgs, "--context", cf.kubeContext)
 		}
 		opts.Agents = agent.NewRunner(t.Client, cfg)
 	}
