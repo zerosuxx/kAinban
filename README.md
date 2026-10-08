@@ -148,22 +148,6 @@ kubectl -n kainban exec -it deploy/kainban -- kainban shell
 kubectl -n kainban exec -it deploy/kainban -- kainban run -- claude
 ```
 
-### Test agent
-
-`--set testAgent.enabled=true` adds a `<release>-kainban-test-agent`
-Deployment that consumes these Secrets the way agents will: env vars for
-Claude, gh, Copilot and Gemini, the stripped Codex `auth.json` copied into a
-writable `CODEX_HOME`, `gh auth setup-git` for HTTPS git, and the Gemini
-`modelProvider` setting for `agy`. Every Secret is optional (skipped providers
-stay logged out), `testAgent.secrets.<provider>: false` withholds one, and the
-pod gets neither `kainban-codex-refresh` nor a ServiceAccount token. Env vars
-are read at pod start, so restart it after `kainban auth` changes a Secret:
-
-```shell
-kubectl -n kainban rollout restart deploy/kainban-test-agent
-kubectl -n kainban exec -it deploy/kainban-test-agent -- bash
-```
-
 ## Security notes
 
 - **Least privilege per agent.** An agent pod must mount only the Secret of its

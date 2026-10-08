@@ -74,22 +74,3 @@ persistence:
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
-# Optional test agent: a pod that mounts the Secrets written by
-# `kainban auth` the way real agents will (each optional), for trying the
-# CLIs by hand: kubectl exec -it deploy/<release>-kainban-test-agent -- bash
-testAgent:
-  enabled: false
-  # Which credentials to hand to the agent. kainban-codex-refresh is never mounted.
-  secrets:
-    claude: true
-    codex: true
-    github: true
-    copilot: true
-    antigravity: true
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 2Gi
