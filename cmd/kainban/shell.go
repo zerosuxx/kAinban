@@ -112,12 +112,19 @@ const antigravitySettings = `{"modelProvider": "gemini", "colorScheme": "termina
 // ensureAntigravitySettings writes antigravitySettings unless the user
 // already has a settings file.
 func ensureAntigravitySettings(home string) {
-	f := filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
-	if _, err := os.Stat(f); err == nil {
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if os.MkdirAll(filepath.Join(dir, "cache"), 0o700) != nil {
 		return
 	}
-	if os.MkdirAll(filepath.Dir(f), 0o700) == nil {
-		os.WriteFile(f, []byte(antigravitySettings), 0o600)
+	writeIfMissing(filepath.Join(dir, "settings.json"), antigravitySettings)
+	// Mark agy's first-run onboarding (welcome, color scheme) as done.
+	writeIfMissing(filepath.Join(dir, "cache", "onboarding.json"),
+		`{"consumerOnboardingComplete": true, "enterpriseOnboardingComplete": false, "onboardingComplete": true}`+"\n")
+}
+
+func writeIfMissing(path, content string) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		os.WriteFile(path, []byte(content), 0o600)
 	}
 }
 

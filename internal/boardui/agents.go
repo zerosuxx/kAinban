@@ -330,7 +330,11 @@ func (m *model) applySpawned(msg spawnedMsg) {
 		return
 	}
 	msg.run.Pod, msg.run.Agent, msg.run.Model = msg.pod, msg.agent, msg.model
-	m.save("started " + string(msg.agent) + " in " + msg.pod)
+	started := cardTitle(t) + ": " + string(msg.agent) + " started"
+	if msg.model != "" {
+		started += " (" + msg.model + ")"
+	}
+	m.save(started)
 	if len(failed) > 0 {
 		m.err = "previous pod not stopped: " + strings.Join(failed, "; ")
 	}

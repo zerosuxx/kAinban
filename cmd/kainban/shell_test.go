@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -40,5 +41,19 @@ func TestWriteCodexHome(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.toml")); err != nil {
 		t.Errorf("config.toml: %v", err)
+	}
+}
+
+func TestEnsureAntigravitySettings(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"mine": true}`), 0o600)
+	ensureAntigravitySettings(home)
+	if b, _ := os.ReadFile(filepath.Join(dir, "settings.json")); string(b) != `{"mine": true}` {
+		t.Fatalf("existing settings overwritten: %s", b)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "cache", "onboarding.json")); err != nil || !strings.Contains(string(b), `"onboardingComplete": true`) {
+		t.Fatalf("onboarding not marked done: %s %v", b, err)
 	}
 }

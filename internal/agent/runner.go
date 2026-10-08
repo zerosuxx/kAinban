@@ -259,9 +259,15 @@ if [ -f /secrets/codex/auth.json ]; then
 fi
 if [ -n "${GEMINI_API_KEY:-}" ]; then
   mkdir -p "$HOME/.gemini/antigravity-cli"
-  # Gemini API key, and no first-run color scheme picker / tips / surveys.
-  printf '{"modelProvider": "gemini", "colorScheme": "terminal", "showTips": false, "showFeedbackSurvey": false}\n' \
-    > "$HOME/.gemini/antigravity-cli/settings.json"
+  # Gemini API key, /work trusted, no tips/surveys; agy rewrites this file.
+  [ -f "$HOME/.gemini/antigravity-cli/settings.json" ] ||
+    printf '{"modelProvider": "gemini", "colorScheme": "terminal", "showTips": false, "showFeedbackSurvey": false, "trustedWorkspaces": ["/work"]}\n' \
+      > "$HOME/.gemini/antigravity-cli/settings.json"
+  # Mark agy's first-run onboarding (welcome, color scheme) as done.
+  mkdir -p "$HOME/.gemini/antigravity-cli/cache"
+  [ -f "$HOME/.gemini/antigravity-cli/cache/onboarding.json" ] ||
+    printf '{"consumerOnboardingComplete": true, "enterpriseOnboardingComplete": false, "onboardingComplete": true}\n' \
+      > "$HOME/.gemini/antigravity-cli/cache/onboarding.json"
 fi
 if [ -n "${GH_TOKEN:-}" ]; then gh auth setup-git >/dev/null 2>&1 || true; fi
 cd /work
