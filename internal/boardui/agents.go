@@ -103,6 +103,9 @@ func (m *model) applyStatuses(st map[string]board.PodState) tea.Cmd {
 				r.PodGone = true
 				if r.Status.Active() {
 					r.SetStatus(board.AgentError)
+					if r == t.Current() {
+						m.finished(t, board.AgentError)
+					}
 				}
 				changed = true
 				continue
@@ -117,26 +120,10 @@ func (m *model) applyStatuses(st map[string]board.PodState) tea.Cmd {
 				continue
 			}
 			cmds = append(cmds, m.captureCmd(t, r)) // keep the output with the run
-			if r != t.Current() || t.Status != board.StatusInProgress {
+			if r != t.Current() {
 				continue
 			}
-			// The latest run hands the ticket over for review, or blocks it.
-			target := board.StatusReview
-			if ps.Status == board.AgentError {
-				target = board.StatusBlocked
-			}
-			wasSelected := m.selected() == t
-			if m.b.MoveTo(t, target) == nil {
-				if wasSelected {
-					m.selectTicket(t) // the cursor follows the card
-				}
-				msg := cardTitle(t) + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent " + string(ps.Status) + ")"
-				if ps.Status == board.AgentError {
-					m.err = msg // a failed agent is an error, not a success
-				} else {
-					m.notice = msg
-				}
-			}
+			m.finished(t, ps.Status)
 		}
 	}
 	var orphans []string
@@ -156,6 +143,30 @@ func (m *model) applyStatuses(st map[string]board.PodState) tea.Cmd {
 		}
 	}
 	return tea.Batch(cmds...)
+}
+
+// finished reports the end of a ticket's latest run and hands the ticket on:
+// to Review when it succeeded, to Blocked when it failed (from In Progress).
+func (m *model) finished(t *board.Ticket, s board.AgentStatus) {
+	target := board.StatusReview
+	if s == board.AgentError {
+		target = board.StatusBlocked
+	}
+	if t.Status == board.StatusInProgress {
+		wasSelected := m.selected() == t
+		if m.b.MoveTo(t, target) == nil && wasSelected {
+			m.selectTicket(t) // the cursor follows the card
+		}
+	}
+	msg := fmt.Sprintf("%s: agent %s", cardTitle(t), s)
+	if t.Status == target {
+		msg = cardTitle(t) + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent " + string(s) + ")"
+	}
+	if s == board.AgentError {
+		m.err = msg // a failed agent is an error, not a success
+	} else {
+		m.notice = msg
+	}
 }
 
 func trimOutput(s string) string {
@@ -296,7 +307,7 @@ func (m *model) spawn(t *board.Ticket, force bool) (tea.Model, tea.Cmd) {
 		m.mode, m.confirm = modeConfirm, confirmRestart
 		return m, nil
 	}
-	if t.Status == board.StatusBacklog || t.Status == board.StatusBlocked || t.Status == board.StatusDone {
+	if t.Status != board.StatusInProgress { // e.g. a retry from Review or Blocked
 		if err := m.b.MoveTo(t, board.StatusInProgress); err != nil {
 			m.err = "cannot start: " + err.Error()
 			return m, nil
@@ -325,8 +336,9 @@ func (m *model) applySpawned(msg spawnedMsg) {
 	if msg.err != nil {
 		msg.run.SetStatus(board.AgentError)
 		msg.run.Output = "start failed: " + msg.err.Error()
+		m.finished(t, board.AgentError)
 		m.save("")
-		m.err = "start failed: " + msg.err.Error()
+		m.err = cardTitle(t) + ": start failed: " + msg.err.Error()
 		return
 	}
 	msg.run.Pod, msg.run.Agent, msg.run.Model = msg.pod, msg.agent, msg.model

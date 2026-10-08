@@ -800,3 +800,43 @@ func TestRunRecordsModel(t *testing.T) {
 		t.Fatalf("details should show the run's model:\n%s", v)
 	}
 }
+
+func TestRetryFromReviewReportsFailure(t *testing.T) {
+	b, x, fr, m := agentBoard(t)
+	b.MoveTo(x, board.StatusReview)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	if x.Status != board.StatusInProgress {
+		t.Fatalf("start from Review should move to In Progress, got %s", x.Status)
+	}
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentError, Ticket: x.ID}
+	poll(m)
+	if x.Status != board.StatusBlocked || !strings.Contains(ansi.Strip(m.toastBox()), "✗") {
+		t.Fatalf("failure: status=%s toast=%q", x.Status, m.toastBox())
+	}
+}
+
+func TestStartFailureBlocks(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	fr.spawnErr = fmt.Errorf("bad config")
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	if x.Status != board.StatusBlocked || !strings.Contains(m.err, "bad config") || !strings.Contains(m.err, "KAI-1") {
+		t.Fatalf("start failure: status=%s err=%q", x.Status, m.err)
+	}
+}
+
+func TestFinishedRunOutsideInProgressStillReported(t *testing.T) {
+	b, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	b.MoveTo(x, board.StatusReview) // moved by hand while running
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentCompleted, Ticket: x.ID}
+	poll(m)
+	if x.Status != board.StatusReview || !strings.Contains(m.notice, "agent completed") {
+		t.Fatalf("status=%s notice=%q", x.Status, m.notice)
+	}
+}
