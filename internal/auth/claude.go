@@ -152,16 +152,22 @@ func (f *claudeFlow) Close() error {
 	return nil
 }
 
-// claudeSetupScript runs `claude setup-token` under `script`, so its output
-// (the token) is recorded to $1, then waits for Enter: the TUI switches back
-// to its alternate screen on return, which would hide the printed token.
-const claudeSetupScript = `if command -v script >/dev/null 2>&1; then
+// claudeSetupScript runs `claude setup-token` under `script`, recording its
+// output (the token) to $1. The command writes to the normal screen, which
+// would still show the token after the TUI exits, so the screen and the
+// scrollback are wiped as soon as the token has been captured; only if no
+// token is found does it pause so the user can copy it by hand.
+const claudeSetupScript = `wipe() { printf '\033[2J\033[3J\033[H'; }
+if command -v script >/dev/null 2>&1; then
   script -q -c "claude setup-token" "$1"
 else
   claude setup-token
 fi
-printf '\n\nkAinban: press Enter to return (the token will be filled in for you)... '
-read -r _`
+if ! grep -q 'sk-ant-oat01-' "$1" 2>/dev/null; then
+  printf '\n\nkAinban: no token found in the output. Copy it from above, then press Enter... '
+  read -r _
+fi
+wipe`
 
 func (f *claudeFlow) Next(ctx context.Context, input string) (Step, error) {
 	switch f.step {
@@ -179,7 +185,8 @@ func (f *claudeFlow) Next(ctx context.Context, input string) (Step, error) {
 			Body: "kAinban will now run `claude setup-token`. Open the URL it shows in a browser, " +
 				"sign in and paste the code back if asked.\n\n" +
 				"It then prints a token starting with " + ClaudeTokenPrefix + " (valid for 1 year). " +
-				"kAinban records the output and fills the token in for you; press Enter when asked to return.",
+				"kAinban captures the token, fills it in for you and then clears the screen and scrollback " +
+				"so it is not left in your terminal.",
 			Command: []string{"sh", "-c", claudeSetupScript, "sh", f.typescript},
 		}, nil
 	case 1:
