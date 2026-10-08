@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -61,7 +60,7 @@ type mode int
 
 const (
 	modeBoard   mode = iota
-	modeInput        // new ticket / edit title / edit description
+	modeForm         // edit popup (all fields) / new ticket
 	modeConfirm      // y/N question, see confirmKind
 	modeDetail
 	modeHelp
@@ -87,14 +86,6 @@ const (
 	confirmOrphans
 )
 
-type inputKind int
-
-const (
-	inputNew inputKind = iota
-	inputTitle
-	inputDescription
-)
-
 type model struct {
 	ctx   context.Context
 	b     *board.Board
@@ -105,10 +96,9 @@ type model struct {
 	row    []int // selected row per column
 	scroll []int // first visible card per column
 
-	mode      mode
-	confirm   confirmKind
-	inputKind inputKind
-	input     textinput.Model
+	mode    mode
+	confirm confirmKind
+	form    *editForm
 
 	notice string
 	err    string
@@ -222,8 +212,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.pollCmd()
 	case tea.KeyPressMsg:
 		switch m.mode {
-		case modeInput:
-			return m.updateInput(msg)
+		case modeForm:
+			return m.updateForm(msg)
 		case modeConfirm:
 			m.mode = modeBoard
 			t := m.selected()
@@ -256,7 +246,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				return m, tea.Quit
 			case "e":
-				return m.startInput(inputDescription)
+				return m.openForm(m.selected(), fieldDescription)
 			case "q", "esc", "enter":
 				m.mode = modeBoard
 				return m, nil
@@ -279,10 +269,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateBoard(msg)
 	case tea.PasteMsg:
-		if m.mode == modeInput {
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
+		if m.mode == modeForm {
+			return m.updateForm(msg)
 		}
 	}
 	return m, nil
@@ -311,10 +299,10 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "H", "shift+left", "backspace":
 		return m, m.move(t, -1)
 	case "n":
-		return m.startInput(inputNew)
+		return m.openForm(nil, fieldTitle)
 	case "e":
 		if t != nil {
-			return m.startInput(inputTitle)
+			return m.openForm(t, fieldTitle)
 		}
 	case "a":
 		if t != nil {
@@ -398,63 +386,34 @@ func (m *model) move(t *board.Ticket, delta int) tea.Cmd {
 	return nil
 }
 
-func (m *model) startInput(k inputKind) (tea.Model, tea.Cmd) {
-	in := textinput.New()
-	in.SetWidth(max(m.width-20, 20))
-	styles := in.Styles()
-	styles.Cursor.Blink = false
-	in.SetStyles(styles)
-	switch k {
-	case inputNew:
-		in.Prompt, in.Placeholder = "New ticket: ", "title"
-	case inputTitle:
-		in.Prompt = "Title: "
-		in.SetValue(m.selected().Title)
-	case inputDescription:
-		in.Prompt, in.Placeholder = "Description: ", "what the agent should do"
-		in.SetValue(m.selected().Description)
-	}
-	focus := in.Focus()
-	m.input, m.inputKind, m.mode = in, k, modeInput
-	return m, focus
+func (m *model) openForm(t *board.Ticket, focus formField) (tea.Model, tea.Cmd) {
+	m.form = newEditForm(t, m.width, focus)
+	m.mode = modeForm
+	return m, m.form.focusCmd()
 }
 
-func (m *model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.mode = modeBoard
-		return m, nil
-	case "ctrl+c":
+// updateForm feeds keys and pastes to the edit popup and saves on ctrl+s.
+func (m *model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
 		return m, tea.Quit
-	case "enter":
-		v := strings.TrimSpace(m.input.Value())
-		m.mode = modeBoard
-		switch m.inputKind {
-		case inputNew:
-			if v != "" {
-				t := m.b.Add(v)
-				m.selectTicket(t)
-				m.save("created " + t.Key + " " + v)
-			}
-		case inputTitle:
-			if t := m.selected(); t != nil && v != "" {
-				t.Title = v
-				t.Touch()
-				m.save("renamed to " + v)
-			}
-		case inputDescription:
-			if t := m.selected(); t != nil {
-				t.Description = v
-				t.Touch()
-				m.save("description updated")
-				m.mode = modeDetail
-				m.openDetail()
-			}
-		}
-		return m, nil
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	res, cmd := m.form.update(msg)
+	switch res {
+	case formCancel:
+		m.mode, m.form, m.notice = modeBoard, nil, "cancelled"
+	case formSave:
+		f := m.form
+		m.mode, m.form = modeBoard, nil
+		if f.ticketID == "" {
+			t := m.b.Add(strings.TrimSpace(f.title.Value()))
+			f.apply(t)
+			m.selectTicket(t)
+			m.save("created " + t.Key + " " + t.Title)
+		} else if t := m.findTicket(f.ticketID); t != nil {
+			f.apply(t)
+			m.save("saved " + t.Key)
+		}
+	}
 	return m, cmd
 }
 
@@ -514,13 +473,42 @@ func (m *model) View() tea.View {
 		b.WriteString(strings.Repeat("\n", pad))
 	}
 	b.WriteString("\n" + footer)
-	v := tea.NewView(b.String())
+	screen := b.String()
+	switch {
+	case m.mode == modeForm && m.form != nil:
+		screen = m.overlay(screen, m.form.view(m.width))
+	case m.mode == modeConfirm:
+		screen = m.overlay(screen, m.confirmBox())
+	}
+	v := tea.NewView(screen)
 	v.AltScreen = true
 	if m.mode == modeLogs || m.mode == modeDetail {
 		// Wheel events; Termux turns touch swipes into them.
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
+}
+
+// overlay draws a popup centered over the screen.
+func (m *model) overlay(screen, box string) string {
+	x := max((m.width-lipgloss.Width(box))/2, 0)
+	y := max((m.height-lipgloss.Height(box))/2, 1)
+	return lipgloss.NewCompositor(
+		lipgloss.NewLayer(screen),
+		lipgloss.NewLayer(box).X(x).Y(y).Z(1),
+	).Render()
+}
+
+// confirmBox is the y/N question as a popup.
+func (m *model) confirmBox() string {
+	w := min(60, max(m.width-4, 30))
+	q := strings.TrimSuffix(m.confirmQuestion(), " y/N")
+	keys := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render("y") + subtle.Render(" yes   ") +
+		lipgloss.NewStyle().Bold(true).Render("n") + subtle.Render("/esc no")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("9")).
+		Padding(1, 2).Width(w).
+		Render(titleStyle.Render("Confirm") + "\n\n" + q + "\n\n" + keys)
 }
 
 func lineCount(s string) int {
@@ -534,10 +522,6 @@ func lineCount(s string) int {
 // last message.
 func (m *model) statusLine() string {
 	switch {
-	case m.mode == modeInput:
-		return m.input.View()
-	case m.mode == modeConfirm:
-		return errStyle.Render(m.confirmQuestion())
 	case m.err != "":
 		return errStyle.Render(m.err)
 	case m.notice != "":
@@ -572,10 +556,10 @@ func (m *model) confirmQuestion() string {
 // footer is the key bar for the current mode.
 func (m *model) footer() string {
 	switch m.mode {
-	case modeInput:
-		return subtle.Render("enter save · esc cancel")
+	case modeForm:
+		return subtle.Render("tab/shift+tab field · ←/→ change priority/agent · enter next field (newline in description) · ctrl+s save · esc cancel")
 	case modeConfirm:
-		return subtle.Render("y confirm · any other key cancel")
+		return subtle.Render("y confirm · n/esc or any other key cancel")
 	case modeDetail:
 		return subtle.Render(fmt.Sprintf("%3.0f%% · j/k pgup/pgdn scroll (touch/wheel too) · g/G top/end · e edit description · q back", m.vp.ScrollPercent()*100))
 	case modeHelp:
@@ -800,7 +784,7 @@ func (m *model) detailText() string {
 
 const helpText = `Navigation     h/l ←/→ columns · j/k ↑/↓ cards · g/G first/last
 Move card      space or L next column · H or backspace previous column
-Tickets        n new · e edit title · enter details (e there edits the description)
+Tickets        n new · e edit (popup with every field) · enter details
                a cycle agent (auto, claude, codex, copilot, antigravity, none);
                  auto lets the orchestrator pick when the agent starts
                p cycle priority (P1 highest … P4) · d delete

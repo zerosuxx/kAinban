@@ -32,6 +32,13 @@ func key(s string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: s}
 }
 
+var (
+	ctrlS    = tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
+	tab      = tea.KeyPressMsg{Code: tea.KeyTab}
+	escKey   = tea.KeyPressMsg{Code: tea.KeyEscape}
+	rightKey = tea.KeyPressMsg{Code: tea.KeyRight}
+)
+
 func typeText(m *model, s string) {
 	for _, r := range s {
 		m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
@@ -43,7 +50,7 @@ func TestCreateMoveDelete(t *testing.T) {
 	m := newModel(st.b, st, Options{})
 	m.Update(key("n"))
 	typeText(m, "Fix login")
-	m.Update(key("enter"))
+	m.Update(ctrlS)
 	if len(st.b.Tickets) != 1 || st.b.Tickets[0].Title != "Fix login" || st.saves != 1 {
 		t.Fatalf("create: %+v saves=%d", st.b.Tickets, st.saves)
 	}
@@ -459,8 +466,8 @@ func TestStopNeedsConfirmation(t *testing.T) {
 	m.Update(key("x"))
 	v := ansi.Strip(m.View().Content)
 	lines := strings.Split(v, "\n")
-	if !strings.Contains(lines[1], "stop the agent") {
-		t.Fatalf("question should be on the line under the header:\n%s", v)
+	if !strings.Contains(v, "Confirm") || !strings.Contains(v, "stop the agent") || !strings.Contains(v, "/esc no") {
+		t.Fatalf("the question should be a popup:\n%s", v)
 	}
 	if !strings.Contains(lines[len(lines)-1], "y confirm") {
 		t.Fatalf("key bar should stay at the bottom:\n%s", v)
@@ -533,5 +540,74 @@ func TestProjectKeys(t *testing.T) {
 	m.width, m.height = 140, 30
 	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "XY-1 Fix login") || !strings.Contains(v, "board XY") {
 		t.Fatalf("card/header should show the key:\n%s", v)
+	}
+}
+
+func TestEditPopup(t *testing.T) {
+	b := board.New("t")
+	x := b.Add("Old title")
+	st := &memStore{b: b}
+	m := newModel(b, st, Options{})
+	m.width, m.height = 100, 40
+	m.selectTicket(x)
+
+	m.Update(key("e"))
+	if m.mode != modeForm || m.form.ticketID != x.ID || m.form.title.Value() != "Old title" {
+		t.Fatalf("form: mode=%v", m.mode)
+	}
+	v := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Edit KAI-1", "Title", "Description", "Priority", "Agent", "Labels", "Branch"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("popup missing %q:\n%s", want, v)
+		}
+	}
+	// Replace the title.
+	for range len("Old title") {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	typeText(m, "New title")
+	m.Update(tab) // description: enter is a newline here
+	typeText(m, "line one")
+	m.Update(key("enter"))
+	typeText(m, "line two")
+	m.Update(tab)      // priority
+	m.Update(rightKey) // P3 -> P4
+	m.Update(tab)      // agent
+	m.Update(rightKey) // none -> auto
+	m.Update(rightKey) // -> claude
+	m.Update(tab)      // labels
+	typeText(m, "backend, urgent ,")
+	m.Update(key("enter")) // enter moves on in single-line fields
+	typeText(m, "feature/login")
+	m.Update(ctrlS)
+	if m.mode != modeBoard || x.Title != "New title" || x.Description != "line one\nline two" ||
+		x.Priority != 4 || x.Agent != "claude" || x.Branch != "feature/login" ||
+		strings.Join(x.Labels, "|") != "backend|urgent" {
+		t.Fatalf("saved: %+v", x)
+	}
+
+	// esc discards.
+	m.Update(key("e"))
+	typeText(m, "XXX")
+	m.Update(escKey)
+	if x.Title != "New title" || m.mode != modeBoard {
+		t.Fatalf("esc should discard: %q", x.Title)
+	}
+
+	// A new ticket needs a title.
+	m.Update(key("n"))
+	m.Update(ctrlS)
+	if m.mode != modeForm || m.form.err == "" || len(b.Tickets) != 1 {
+		t.Fatal("empty title should be refused")
+	}
+	typeText(m, "Second")
+	m.Update(ctrlS)
+	if len(b.Tickets) != 2 || b.Tickets[1].Key != "KAI-2" {
+		t.Fatalf("new ticket: %+v", b.Tickets)
+	}
+	if os.Getenv("BOARD_SNAPSHOT") != "" {
+		m.selectTicket(x)
+		m.Update(key("e"))
+		os.WriteFile(os.Getenv("BOARD_SNAPSHOT"), []byte(ansi.Strip(m.View().Content)), 0o644)
 	}
 }

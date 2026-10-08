@@ -83,8 +83,9 @@ All Secrets live in the release namespace.
 `kainban board` (alias `kanban`) is the kanban board: Backlog → In Progress
 (WIP limit 3) → Review → Done, plus a Blocked side column for failed agents
 (moving skips it; moving out of it, or `s` to retry, goes back to In Progress), tickets as cards with priority, agent and
-branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new,
-`e` edit, `a` cycle the agent, `p` priority, `d` delete, `enter` details,
+branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new and
+`e` edit in a popup with every field (title, description, priority, agent,
+labels, branch; `tab` between fields, `ctrl+s` saves, `esc` cancels), `a` cycle the agent, `p` priority, `d` delete, `enter` details,
 `?` help. The board is saved on every change to
 `~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
 `--file` overrides).
@@ -98,7 +99,8 @@ reused. The key is on the card, in the details, in the agent's prompt
 `a` cycles the agent: `auto` (the orchestrator picks when the agent starts;
 for now the first of claude, codex, copilot, antigravity with credentials,
 later agent profiles; the card then shows e.g. `auto→claude`), or a fixed one.
-Questions and messages appear under the header, the key bar always stays at
+Confirmations (stop, delete, Done with a running agent, restart, orphans)
+are popups; messages appear under the header, the key bar always stays at
 the bottom, and on narrow screens only the columns that fit are shown.
 
 `s` starts the ticket's agent in its own pod, from the
