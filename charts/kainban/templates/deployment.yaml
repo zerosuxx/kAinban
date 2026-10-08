@@ -53,6 +53,11 @@ spec:
               value: {{ .Values.nodeSelector | toJson | quote }}
             - name: KAINBAN_AGY_MODEL
               value: {{ .Values.agents.antigravityModel | quote }}
+            {{- with include "kainban.ollama.url" . }}
+            # The in-cluster Ollama; the agent pods get it too.
+            - name: OLLAMA_HOST
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

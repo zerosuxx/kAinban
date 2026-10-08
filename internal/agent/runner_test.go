@@ -228,8 +228,9 @@ func TestStopTicketDeletesAllItsPods(t *testing.T) {
 func TestModels(t *testing.T) {
 	t.Setenv("KAINBAN_AGENT_IMAGE", "img")
 	t.Setenv("KAINBAN_AGY_MODEL", "gemini-flash")
+	t.Setenv("OLLAMA_HOST", "http://kainban-ollama:11434")
 	c, err := FromEnv("kb")
-	if err != nil || c.AgyModel != "gemini-flash" {
+	if err != nil || c.AgyModel != "gemini-flash" || c.OllamaHost != "http://kainban-ollama:11434" {
 		t.Fatalf("%+v %v", c, err)
 	}
 	cs := fake.NewSimpleClientset()
@@ -241,6 +242,9 @@ func TestModels(t *testing.T) {
 			t.Fatal(err)
 		}
 		p, _ := cs.CoreV1().Pods("kb").Get(context.Background(), name, metav1.GetOptions{})
+		if envNames(p.Spec.Containers[0])["OLLAMA_HOST"].Value != "http://kainban-ollama:11434" {
+			t.Fatal("agents should get OLLAMA_HOST")
+		}
 		return envNames(p.Spec.Containers[0])["KAINBAN_MODEL"].Value, p.Spec.Containers[0].Command[2]
 	}
 	if m, cmd := spawn(&board.Ticket{ID: "a", Title: "x", Agent: "antigravity"}); m != "gemini-flash" || !strings.Contains(cmd, `--model "$KAINBAN_MODEL"`) {

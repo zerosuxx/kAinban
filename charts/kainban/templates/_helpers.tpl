@@ -65,3 +65,27 @@ Container image reference.
 {{- define "kainban.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
 {{- end }}
+
+{{/*
+Ollama: its own selector, so the orchestrator Deployment never selects it.
+*/}}
+{{- define "kainban.ollama.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "kainban.name" . }}-ollama
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "kainban.ollama.labels" -}}
+helm.sh/chart: {{ include "kainban.chart" . }}
+{{ include "kainban.ollama.selectorLabels" . }}
+app.kubernetes.io/component: ollama
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+In-cluster Ollama URL ("" when disabled).
+*/}}
+{{- define "kainban.ollama.url" -}}
+{{- if .Values.ollama.enabled }}
+{{- printf "http://%s-ollama.%s.svc:11434" (include "kainban.fullname" .) .Release.Namespace }}
+{{- end }}
+{{- end }}

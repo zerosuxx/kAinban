@@ -80,3 +80,34 @@ agents:
   # quota for the Pro models, so the default is a Flash model; set "" to use
   # agy's own default (gemini-3.1-pro) with a billed Gemini API key.
   antigravityModel: gemini-3.8-flash-medium
+
+# A local Ollama server in the release namespace (Deployment + Service +
+# PVC). It pulls `models` on start; the orchestrator and the agent pods get
+# its URL as OLLAMA_HOST. CPU only: a 3B model needs ~3 GB of memory.
+ollama:
+  enabled: true
+  image:
+    repository: ollama/ollama
+    tag: "0.40.1"
+    pullPolicy: IfNotPresent
+  # Pulled on every start (present models are only checked). llama3.2:3b is
+  # ~2 GB; llama3.2:1b (~1.3 GB) for small nodes, llama3.1:8b (~4.9 GB) for
+  # better answers.
+  models:
+    - llama3.2:3b
+  # How long a model stays loaded after its last request.
+  keepAlive: 30m
+  resources:
+    requests:
+      cpu: 500m
+      memory: 3Gi
+    limits:
+      memory: 6Gi
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    size: 10Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

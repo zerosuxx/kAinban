@@ -38,11 +38,20 @@ type Config struct {
 	// AgyModel is the --model for the Antigravity CLI ("" = its default;
 	// the Gemini API free tier has no quota for the Pro models).
 	AgyModel string
+	// OllamaHost is the in-cluster Ollama server ("" = none), passed to the
+	// agents as OLLAMA_HOST.
+	OllamaHost string
 }
 
-// FromEnv reads KAINBAN_AGENT_IMAGE and KAINBAN_AGENT_NODE_SELECTOR (JSON).
+// FromEnv reads KAINBAN_AGENT_IMAGE, KAINBAN_AGENT_NODE_SELECTOR (JSON),
+// KAINBAN_AGY_MODEL and OLLAMA_HOST.
 func FromEnv(namespace string) (Config, error) {
-	c := Config{Namespace: namespace, Image: os.Getenv("KAINBAN_AGENT_IMAGE"), AgyModel: os.Getenv("KAINBAN_AGY_MODEL")}
+	c := Config{
+		Namespace:  namespace,
+		Image:      os.Getenv("KAINBAN_AGENT_IMAGE"),
+		AgyModel:   os.Getenv("KAINBAN_AGY_MODEL"),
+		OllamaHost: os.Getenv("OLLAMA_HOST"),
+	}
 	if c.Image == "" {
 		return c, fmt.Errorf("KAINBAN_AGENT_IMAGE is not set (run kainban in the orchestrator pod)")
 	}
@@ -345,6 +354,9 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 		{Name: "KAINBAN_AGENT", Value: string(t.Agent)},
 		{Name: "KAINBAN_MODEL", Value: r.ModelFor(t)},
 		secretEnv("GH_TOKEN", auth.GitHubSecretName, auth.GitHubTokenKey),
+	}
+	if r.cfg.OllamaHost != "" {
+		env = append(env, corev1.EnvVar{Name: "OLLAMA_HOST", Value: r.cfg.OllamaHost})
 	}
 	var mounts []corev1.VolumeMount
 	volumes := []corev1.Volume{

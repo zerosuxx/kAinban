@@ -160,6 +160,22 @@ the tmux servers. Agent pods stay until stopped with `x`.
 kubectl -n kainban exec -it deploy/kainban -- kainban board
 ```
 
+### Ollama
+
+The chart also runs an [Ollama](https://ollama.com) server
+(`<release>-ollama` Deployment, Service and a 10 Gi PVC for the models; CPU
+only). It pulls `ollama.models` on every start, by default `llama3.2:3b`
+(~2 GB; models already on the volume are only checked), and the orchestrator
+and the agent pods get its URL as `OLLAMA_HOST`:
+
+```shell
+kubectl -n kainban exec deploy/kainban -- curl -s "$OLLAMA_HOST/api/generate" \
+  -d '{"model": "llama3.2:3b", "prompt": "Say hi", "stream": false}'
+```
+
+`ollama.enabled=false` turns it off; `ollama.nodeSelector` and
+`ollama.resources` (3 Gi requested, 6 Gi limit) place and size it.
+
 ### Using the credentials in the orchestrator pod
 
 `kainban shell` starts a shell and `kainban run -- CMD` runs a command with the
