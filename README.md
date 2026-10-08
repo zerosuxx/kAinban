@@ -156,7 +156,11 @@ returns to the board. While the headless run is still working, `t` asks
 first: the session is a second CLI on the same conversation and does not show
 the run's progress until it finishes (`o` does). `T` opens a plain shell there,
 in its own tmux session. The shell container runs under `tini`, which reaps
-the tmux servers. Agent pods stay until stopped with `x`.
+the tmux servers. `v` (experimental) opens the same session inside the board
+instead: a header with the ticket, its screen, and a ticket panel on screens
+at least 100 columns wide; `kainban attach` runs on a local pseudo terminal
+and a terminal emulator (charmbracelet/x/vt) keeps its screen. Keys and
+pastes go to the session, `ctrl+g` returns to the board and leaves it running. Agent pods stay until stopped with `x`.
 
 ```shell
 kubectl -n kainban exec -it deploy/kainban -- kainban board

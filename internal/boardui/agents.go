@@ -416,6 +416,9 @@ func (m *model) attach(t *board.Ticket, shell, confirmed bool) (tea.Model, tea.C
 		return m, nil
 	}
 	argv := m.opts.Agents.AttachCommand(r.Pod, r.Agent, shell)
+	if m.attachEmbed {
+		return m.openTerm(t, argv, shell)
+	}
 	return m, tea.ExecProcess(exec.Command(argv[0], argv[1:]...), func(err error) tea.Msg {
 		return attachDoneMsg{err}
 	})

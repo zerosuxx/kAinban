@@ -27,7 +27,7 @@
             version = "0";
             src = pkgs.lib.cleanSource self;
             # Update after go.mod changes: build once, copy the "got:" hash.
-            vendorHash = "sha256-wyKTsaehLH4xas39/SdxC0NC/FvAuxcPZH6cNSrCUP0=";
+            vendorHash = "sha256-Azon/0Fv9Cz7RgqpTvoIcKZHjjOJTs0HjoEbg4YZ/q8=";
             subPackages = [ "cmd/kainban" ];
             env.CGO_ENABLED = 0;
             ldflags = [ "-s" "-w" "-X main.appVersion=${version}" ];

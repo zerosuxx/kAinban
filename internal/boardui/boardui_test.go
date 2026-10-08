@@ -104,6 +104,7 @@ type fakeRunner struct {
 	logs     string
 	n        int
 	spawnErr error
+	attach   []string // AttachCommand's argv, when set
 }
 
 func newFake() *fakeRunner {
@@ -149,6 +150,9 @@ func (f *fakeRunner) StopTicket(_ context.Context, id string) error {
 }
 func (f *fakeRunner) ModelFor(t *board.Ticket) string { return t.Model }
 func (f *fakeRunner) AttachCommand(pod string, _ board.AgentType, shell bool) []string {
+	if f.attach != nil {
+		return f.attach
+	}
 	return []string{"true", pod, fmt.Sprint(shell)}
 }
 
@@ -1040,5 +1044,58 @@ func TestMouseForm(t *testing.T) {
 		if m.form.focus != fieldDescription {
 			t.Fatalf("h=%d: focus %s", h, fieldNames[m.form.focus])
 		}
+	}
+}
+
+// pump feeds an embedded session's messages to m until done holds.
+func pump(t *testing.T, m *model, cmd tea.Cmd, done func() bool) tea.Cmd {
+	t.Helper()
+	for !done() {
+		if cmd == nil {
+			t.Fatal("no more messages")
+		}
+		msgs := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { msgs <- c() }(cmd)
+		select {
+		case msg := <-msgs:
+			_, cmd = m.Update(msg)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out:\n%s", ansi.Strip(m.View().Content))
+		}
+	}
+	return cmd
+}
+
+func TestEmbeddedSession(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	fr.attach = []string{"sh", "-c", `printf '\033[31mhello\033[m %sx%s\n' $(stty size); read line; echo "got:$line"; read line`}
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentCompleted, Ticket: x.ID}
+	poll(m)
+
+	_, cmd = m.Update(key("v"))
+	if m.mode != modeTerm {
+		t.Fatalf("v: mode %v, err %q", m.mode, m.err)
+	}
+	view := func() string { return ansi.Strip(m.View().Content) }
+	// 140 wide: the panel takes 33 columns; the header takes a line.
+	cmd = pump(t, m, cmd, func() bool { return strings.Contains(view(), "hello 29x107") })
+	if v := view(); !strings.Contains(v, "Fix login") || !strings.Contains(v, "ctrl+g") || !strings.Contains(v, "Branch") {
+		t.Fatalf("header or panel missing:\n%s", v)
+	}
+	if c := m.View().Content; !strings.Contains(c, "31mhello") {
+		t.Fatalf("colours lost: %q", c)
+	}
+	typeText(m, "hi")
+	m.Update(key("enter"))
+	cmd = pump(t, m, cmd, func() bool { return strings.Contains(view(), "got:hi") })
+
+	// ctrl+g leaves; the session's end brings the board back.
+	m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	pump(t, m, cmd, func() bool { return m.mode == modeBoard })
+	if m.term != nil || !strings.Contains(m.notice, "keeps running") {
+		t.Fatalf("after ctrl+g: notice %q err %q", m.notice, m.err)
 	}
 }

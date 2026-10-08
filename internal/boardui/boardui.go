@@ -70,6 +70,7 @@ const (
 	modeDetail
 	modeHelp
 	modeLogs
+	modeTerm // the agent's session embedded (experimental, v)
 )
 
 type (
@@ -135,6 +136,9 @@ type model struct {
 		at time.Time
 	}
 	popupX, popupY int // where overlay drew the last popup
+
+	term        *embedTerm // modeTerm: the embedded session
+	attachEmbed bool       // the pending attach embeds the session (v)
 }
 
 // cardHit is a clickable area of the board: a card, or a whole column (row -1).
@@ -297,6 +301,14 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // view left or replaced: this loop ends
 		}
 		return m, tea.Batch(m.logsCmd(m.logsPod), m.logsTick())
+	case termOutputMsg:
+		if msg.t != m.term {
+			return m, nil
+		}
+		return m, msg.t.wait()
+	case termExitMsg:
+		m.leaveTerm(msg)
+		return m, nil
 	case attachDoneMsg:
 		if msg.err != nil {
 			m.err = "session: " + msg.err.Error()
@@ -306,6 +318,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.pollCmd()
 	case tea.KeyPressMsg:
 		switch m.mode {
+		case modeTerm:
+			return m.updateTerm(msg)
 		case modeForm:
 			return m.updateForm(msg)
 		case modeConfirm:
@@ -375,6 +389,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateBoard(msg)
 	case tea.PasteMsg:
+		if m.mode == modeTerm {
+			return m.updateTerm(msg)
+		}
 		if m.mode == modeForm {
 			return m.updateForm(msg)
 		}
@@ -458,7 +475,13 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t", "T":
 		if t != nil {
+			m.attachEmbed = false
 			return m.attach(t, msg.String() == "T", false)
+		}
+	case "v": // experimental: the session inside the board
+		if t != nil {
+			m.attachEmbed = true
+			return m.attach(t, false, false)
 		}
 	case "?":
 		m.mode = modeHelp
@@ -542,6 +565,9 @@ var (
 const cardLines = 5 // border (2) + title + meta + branch
 
 func (m *model) View() tea.View {
+	if m.mode == modeTerm && m.term != nil {
+		return m.termView()
+	}
 	head := titleStyle.Render("kAinban")
 	if m.opts.AppVersion != "" {
 		head += " " + subtle.Render(m.opts.AppVersion)
@@ -1071,6 +1097,8 @@ Agents         s start the ticket's agent in a pod (moves it to In Progress)
                t open the agent's session in its pod (claude --continue, codex resume,
                  ...) to ask for changes, in tmux: ctrl+z returns here and keeps it
                  running, t again re-attaches · T plain shell there (same)
+               v the same session inside the board, with a ticket panel (experimental;
+                 ctrl+g back to the board, the session keeps running)
                o show the agent's output, live (refreshes every 2 s, follows the end;
                  f toggles following, scrolling up pauses it, G resumes)
                x stop the agent (all its pods) · C stop orphaned agent pods
