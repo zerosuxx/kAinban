@@ -51,6 +51,8 @@ spec:
               value: {{ include "kainban.image" . | quote }}
             - name: KAINBAN_AGENT_NODE_SELECTOR
               value: {{ .Values.nodeSelector | toJson | quote }}
+            - name: KAINBAN_AGY_MODEL
+              value: {{ .Values.agents.antigravityModel | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -78,6 +78,10 @@ All Secrets live in the release namespace.
 | `kainban-copilot` | `COPILOT_GITHUB_TOKEN` | GitHub Copilot CLI agents |
 | `kainban-antigravity` | `GEMINI_API_KEY` | Antigravity / Gemini agents |
 
+The Gemini API free tier has no quota for the Pro models, so agents run `agy`
+with `--model gemini-3.8-flash-medium` (chart value `agents.antigravityModel`;
+set it to `""` for agy's default model with a billed key).
+
 ### Board
 
 `kainban board` (alias `kanban`) is the kanban board: Backlog → In Progress

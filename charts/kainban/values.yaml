@@ -74,3 +74,9 @@ persistence:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+agents:
+  # --model for the Antigravity CLI (agy). The Gemini API free tier has no
+  # quota for the Pro models, so the default is a Flash model; set "" to use
+  # agy's own default (gemini-3.1-pro) with a billed Gemini API key.
+  antigravityModel: gemini-3.8-flash-medium

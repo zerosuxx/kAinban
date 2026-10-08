@@ -35,11 +35,14 @@ type Config struct {
 	Image        string
 	NodeSelector map[string]string
 	KubectlArgs  []string // e.g. --context/--kubeconfig, for AttachCommand
+	// AgyModel is the --model for the Antigravity CLI ("" = its default;
+	// the Gemini API free tier has no quota for the Pro models).
+	AgyModel string
 }
 
 // FromEnv reads KAINBAN_AGENT_IMAGE and KAINBAN_AGENT_NODE_SELECTOR (JSON).
 func FromEnv(namespace string) (Config, error) {
-	c := Config{Namespace: namespace, Image: os.Getenv("KAINBAN_AGENT_IMAGE")}
+	c := Config{Namespace: namespace, Image: os.Getenv("KAINBAN_AGENT_IMAGE"), AgyModel: os.Getenv("KAINBAN_AGY_MODEL")}
 	if c.Image == "" {
 		return c, fmt.Errorf("KAINBAN_AGENT_IMAGE is not set (run kainban in the orchestrator pod)")
 	}
@@ -215,7 +218,7 @@ var resumeCommands = map[board.AgentType]string{
 	"claude":      "claude --continue --dangerously-skip-permissions",
 	"codex":       "codex resume --last --dangerously-bypass-approvals-and-sandbox",
 	"copilot":     "copilot --continue --allow-all-tools",
-	"antigravity": "agy --continue --dangerously-skip-permissions",
+	"antigravity": `agy --continue --dangerously-skip-permissions ${KAINBAN_AGY_MODEL:+--model "$KAINBAN_AGY_MODEL"}`,
 }
 
 // AttachCommand is the kubectl invocation that opens the agent's session
@@ -223,7 +226,9 @@ var resumeCommands = map[board.AgentType]string{
 func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []string {
 	inner := "cd /work && exec " + resumeCommands[agent]
 	if shell || resumeCommands[agent] == "" {
-		inner = "cd /work && exec bash -l"
+		// Not a login shell: Ubuntu's /etc/profile calls `run-parts --regex`,
+		// which the image's busybox run-parts does not understand.
+		inner = "cd /work && exec bash"
 	}
 	argv := append([]string{"kubectl"}, r.cfg.KubectlArgs...)
 	return append(argv, "-n", r.cfg.Namespace, "exec", "-it", pod, "-c", shellContainer, "--", "sh", "-c", inner)
@@ -238,7 +243,7 @@ var agentCommands = map[board.AgentType]string{
 	// final answer again to stdout; keep only the transcript.
 	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$KAINBAN_PROMPT" </dev/null >/dev/null`,
 	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools`,
-	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
+	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_AGY_MODEL:+--model "$KAINBAN_AGY_MODEL"}`,
 }
 
 // setupScript prepares credentials like the chart's test agent, then runs
@@ -289,6 +294,7 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 		{Name: "KAINBAN_TICKET_ID", Value: t.ID},
 		{Name: "KAINBAN_TICKET_KEY", Value: t.Key},
 		{Name: "KAINBAN_AGENT", Value: string(t.Agent)},
+		{Name: "KAINBAN_AGY_MODEL", Value: r.cfg.AgyModel},
 		secretEnv("GH_TOKEN", auth.GitHubSecretName, auth.GitHubTokenKey),
 	}
 	var mounts []corev1.VolumeMount

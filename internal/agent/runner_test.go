@@ -164,7 +164,7 @@ func TestAttachCommand(t *testing.T) {
 	if !strings.HasPrefix(got, "kubectl --context c -n kb exec -it p1 -c shell -- sh -c") || !strings.Contains(got, "codex resume --last") {
 		t.Fatalf("attach: %s", got)
 	}
-	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "bash -l") {
+	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "exec bash") || strings.Contains(got, "bash -l") {
 		t.Fatalf("shell: %s", got)
 	}
 }
@@ -207,5 +207,25 @@ func TestStopTicketDeletesAllItsPods(t *testing.T) {
 	st, _ := r.Statuses(ctx)
 	if len(st) != 1 || st["b1"].Ticket != "t2" {
 		t.Fatalf("left: %v", st)
+	}
+}
+
+func TestAgyModel(t *testing.T) {
+	t.Setenv("KAINBAN_AGENT_IMAGE", "img")
+	t.Setenv("KAINBAN_AGY_MODEL", "gemini-flash")
+	c, err := FromEnv("kb")
+	if err != nil || c.AgyModel != "gemini-flash" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	cs := fake.NewSimpleClientset()
+	r := NewRunner(cs, c)
+	name, _, err := r.Spawn(context.Background(), &board.Ticket{ID: "a", Title: "x", Agent: "antigravity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := cs.CoreV1().Pods("kb").Get(context.Background(), name, metav1.GetOptions{})
+	cmd := p.Spec.Containers[0].Command[2]
+	if envNames(p.Spec.Containers[0])["KAINBAN_AGY_MODEL"].Value != "gemini-flash" || !strings.Contains(cmd, `--model "$KAINBAN_AGY_MODEL"`) {
+		t.Fatalf("model not passed: %s", cmd)
 	}
 }
