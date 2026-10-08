@@ -41,16 +41,20 @@ type Config struct {
 	// OllamaHost is the in-cluster Ollama server ("" = none), passed to the
 	// agents as OLLAMA_HOST.
 	OllamaHost string
+	// OllamaModel is the model of the ollama agent when the ticket names
+	// none.
+	OllamaModel string
 }
 
 // FromEnv reads KAINBAN_AGENT_IMAGE, KAINBAN_AGENT_NODE_SELECTOR (JSON),
-// KAINBAN_AGY_MODEL and OLLAMA_HOST.
+// KAINBAN_AGY_MODEL, OLLAMA_HOST and KAINBAN_OLLAMA_MODEL.
 func FromEnv(namespace string) (Config, error) {
 	c := Config{
-		Namespace:  namespace,
-		Image:      os.Getenv("KAINBAN_AGENT_IMAGE"),
-		AgyModel:   os.Getenv("KAINBAN_AGY_MODEL"),
-		OllamaHost: os.Getenv("OLLAMA_HOST"),
+		Namespace:   namespace,
+		Image:       os.Getenv("KAINBAN_AGENT_IMAGE"),
+		AgyModel:    os.Getenv("KAINBAN_AGY_MODEL"),
+		OllamaHost:  os.Getenv("OLLAMA_HOST"),
+		OllamaModel: os.Getenv("KAINBAN_OLLAMA_MODEL"),
 	}
 	if c.Image == "" {
 		return c, fmt.Errorf("KAINBAN_AGENT_IMAGE is not set (run kainban in the orchestrator pod)")
@@ -228,6 +232,7 @@ var resumeCommands = map[board.AgentType]string{
 	"codex":       `codex resume --last --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"}`,
 	"copilot":     `copilot --continue --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 	"antigravity": `agy --continue --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
+	"ollama":      `codex resume --last --oss --local-provider ollama --dangerously-bypass-approvals-and-sandbox -m "$KAINBAN_MODEL"`,
 }
 
 // AttachCommand is the `kainban attach` invocation (client-go exec, no
@@ -274,6 +279,12 @@ var agentCommands = map[board.AgentType]string{
 	"codex":       `set -o pipefail; codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"} "$KAINBAN_PROMPT" </dev/null | kainban stream codex`,
 	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 	"antigravity": agyRetries + `set -o pipefail; agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions --output-format stream-json ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"} | kainban stream antigravity`,
+	// codex with a model on the in-cluster Ollama. The model is pulled first
+	// when Ollama does not have it yet (codex would too, but with a progress
+	// bar that floods the log).
+	"ollama": `set -o pipefail; echo "ollama: pulling $KAINBAN_MODEL (if missing)"; ` +
+		`curl -sS --fail-with-body "$OLLAMA_HOST/api/pull" -d "{\"model\": \"$KAINBAN_MODEL\", \"stream\": false}" >/dev/null || exit 1; ` +
+		`codex exec --oss --local-provider ollama --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -m "$KAINBAN_MODEL" "$KAINBAN_PROMPT" </dev/null | kainban stream codex`,
 }
 
 // agyRetries copies agy's model retries ("attempt 2 failed (Error 503 ...),
@@ -320,8 +331,11 @@ func (r *Runner) ModelFor(t *board.Ticket) string {
 	if t.Model != "" {
 		return t.Model
 	}
-	if t.Agent == "antigravity" {
+	switch t.Agent {
+	case "antigravity":
 		return r.cfg.AgyModel
+	case "ollama":
+		return r.cfg.OllamaModel
 	}
 	return ""
 }
@@ -343,6 +357,14 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", t.Agent)
 	}
+	if t.Agent == "ollama" {
+		switch {
+		case r.cfg.OllamaHost == "":
+			return nil, fmt.Errorf("ollama is not enabled in the chart (ollama.enabled)")
+		case r.ModelFor(t) == "":
+			return nil, fmt.Errorf("no ollama model: set the ticket's model or ollama.models in the chart")
+		}
+	}
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: "/home/ubuntu"},
 		// Session/config dirs live on the volume both containers share.
@@ -356,7 +378,10 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 		secretEnv("GH_TOKEN", auth.GitHubSecretName, auth.GitHubTokenKey),
 	}
 	if r.cfg.OllamaHost != "" {
-		env = append(env, corev1.EnvVar{Name: "OLLAMA_HOST", Value: r.cfg.OllamaHost})
+		env = append(env,
+			corev1.EnvVar{Name: "OLLAMA_HOST", Value: r.cfg.OllamaHost},
+			// codex --oss talks to Ollama's OpenAI-compatible API here.
+			corev1.EnvVar{Name: "CODEX_OSS_BASE_URL", Value: strings.TrimSuffix(r.cfg.OllamaHost, "/") + "/v1"})
 	}
 	var mounts []corev1.VolumeMount
 	volumes := []corev1.Volume{

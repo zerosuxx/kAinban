@@ -57,6 +57,9 @@ spec:
             # The in-cluster Ollama; the agent pods get it too.
             - name: OLLAMA_HOST
               value: {{ . | quote }}
+            # The ollama agent's model when the ticket names none.
+            - name: KAINBAN_OLLAMA_MODEL
+              value: {{ first $.Values.ollama.models | default "" | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

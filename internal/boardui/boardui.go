@@ -498,7 +498,7 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	dimBorder   = lipgloss.Color("240")
 	agentColors = map[board.AgentType]string{
-		"auto": "#b4befe", "claude": "#fab387", "codex": "#94e2d5", "copilot": "#89dceb", "antigravity": "#f5c2e7",
+		"auto": "#b4befe", "claude": "#fab387", "codex": "#94e2d5", "copilot": "#89dceb", "antigravity": "#f5c2e7", "ollama": "#a6e3a1",
 	}
 )
 
@@ -975,7 +975,7 @@ func (m *model) detailText() string {
 const helpText = `Navigation     h/l ←/→ columns · j/k ↑/↓ cards · g/G first/last
 Move card      space or L next column · H or backspace previous column
 Tickets        n new · e edit (popup with every field, incl. an optional model) · enter details
-               a cycle agent (auto, claude, codex, copilot, antigravity, none);
+               a cycle agent (auto, claude, codex, copilot, antigravity, ollama, none);
                  auto lets the orchestrator pick when the agent starts
                p cycle priority (P1 highest … P4) · d delete
 Agents         s start the ticket's agent in a pod (moves it to In Progress)

@@ -153,6 +153,7 @@ type codexEvent struct {
 		Server   string `json:"server"`
 		Tool     string `json:"tool"`
 		Query    string `json:"query"`
+		Message  string `json:"message"`
 		Changes  []struct {
 			Path string `json:"path"`
 			Kind string `json:"kind"`
@@ -196,6 +197,8 @@ func (f *streamFormatter) codex(line []byte) {
 				out = fmt.Sprintf("exit %d\n%s", *it.ExitCode, out)
 			}
 			f.result(out, failed)
+		case "error": // a warning; failures end the turn with turn.failed
+			f.printf("! %s\n", oneLine(it.Message, 300))
 		case "file_change":
 			for _, c := range it.Changes {
 				f.printf("→ %s %s\n", c.Kind, workPath(c.Path))

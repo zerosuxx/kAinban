@@ -73,7 +73,7 @@ func newEditForm(t *board.Ticket, width int, focus formField) *editForm {
 		return get(t)
 	}
 	f.title = newTextInput(value(func(t *board.Ticket) string { return t.Title }), "what needs to be done", w)
-	f.model = newTextInput(value(func(t *board.Ticket) string { return t.Model }), "optional, e.g. claude-opus-5-5 (empty = the agent's default)", w)
+	f.model = newTextInput(value(func(t *board.Ticket) string { return t.Model }), "optional, e.g. claude-opus-5-5 or qwen3:4b for ollama (empty = the agent's default)", w)
 	f.labels = newTextInput(value(func(t *board.Ticket) string { return strings.Join(t.Labels, ", ") }), "comma separated", w)
 	f.branch = newTextInput(value(func(t *board.Ticket) string { return t.Branch }), "optional", w)
 

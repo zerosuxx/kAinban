@@ -51,7 +51,7 @@ type AgentType string
 const AgentAuto AgentType = "auto"
 
 // AgentTypes lists the selectable agents in cycling order ("" = none).
-var AgentTypes = []AgentType{"", AgentAuto, "claude", "codex", "copilot", "antigravity"}
+var AgentTypes = []AgentType{"", AgentAuto, "claude", "codex", "copilot", "antigravity", "ollama"}
 
 // AgentStatus is the state of an agent run.
 type AgentStatus string

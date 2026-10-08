@@ -173,6 +173,14 @@ kubectl -n kainban exec deploy/kainban -- curl -s "$OLLAMA_HOST/api/generate" \
   -d '{"model": "llama3.2:3b", "prompt": "Say hi", "stream": false}'
 ```
 
+The `ollama` agent (`a` cycles to it) runs a ticket with `codex exec --oss`
+on that server: the ticket's model, or the first of `ollama.models`. A model
+Ollama does not have yet is pulled by codex before the run, so any model from
+the [Ollama library](https://ollama.com/library) can go in the ticket's
+*Model* field (`qwen3:4b`, `llama3.1:8b`, …); it then stays on the volume.
+Small models are weak at tool calls, and on CPU they are slow, so this is for
+simple tasks and experiments. `auto` never picks it.
+
 `ollama.enabled=false` turns it off; `ollama.nodeSelector` and
 `ollama.resources` (3 Gi requested, 6 Gi limit) place and size it.
 

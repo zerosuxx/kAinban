@@ -272,3 +272,30 @@ func TestModels(t *testing.T) {
 		t.Fatalf("resume keeps the model: %s", got)
 	}
 }
+
+func TestOllamaAgent(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	r := NewRunner(cs, Config{Namespace: "kb", Image: "i"})
+	if _, _, err := r.Spawn(context.Background(), &board.Ticket{ID: "o", Title: "x", Agent: "ollama"}); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("ollama without a server: %v", err)
+	}
+	r = NewRunner(cs, Config{Namespace: "kb", Image: "i", OllamaHost: "http://ollama:11434", OllamaModel: "llama3.2:3b"})
+	name, _, err := r.Spawn(context.Background(), &board.Ticket{ID: "o", Title: "x", Agent: "ollama"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := cs.CoreV1().Pods("kb").Get(context.Background(), name, metav1.GetOptions{})
+	env := envNames(p.Spec.Containers[0])
+	if env["KAINBAN_MODEL"].Value != "llama3.2:3b" || env["CODEX_OSS_BASE_URL"].Value != "http://ollama:11434/v1" {
+		t.Fatalf("env: %+v", env)
+	}
+	if cmd := p.Spec.Containers[0].Command[2]; !strings.Contains(cmd, "codex exec --oss --local-provider ollama") || !strings.Contains(cmd, "kainban stream codex") {
+		t.Fatalf("command: %s", cmd)
+	}
+	if got := strings.Join(r.AttachCommand(name, "ollama", false), " "); !strings.Contains(got, "codex resume --last --oss") {
+		t.Fatalf("attach: %s", got)
+	}
+	if m := r.ModelFor(&board.Ticket{Agent: "ollama", Model: "qwen3:4b"}); m != "qwen3:4b" {
+		t.Fatalf("ticket model should win: %s", m)
+	}
+}

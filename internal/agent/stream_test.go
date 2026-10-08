@@ -78,11 +78,11 @@ func TestFormatAgyStream(t *testing.T) {
 
 func TestFormatStreamPassesOtherLines(t *testing.T) {
 	var out strings.Builder
-	in := "Error: not logged in\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"boom\"}}\n{broken\n"
+	in := "Error: not logged in\n{\"type\":\"item.completed\",\"item\":{\"type\":\"error\",\"message\":\"no metadata\"}}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"boom\"}}\n{broken\n"
 	if err := FormatStream("codex", strings.NewReader(in), &out); err != ErrRunFailed {
 		t.Fatalf("turn.failed should fail the run: %v", err)
 	}
-	if out.String() != "Error: not logged in\n✗ boom\n{broken\n" {
+	if out.String() != "Error: not logged in\n! no metadata\n✗ boom\n{broken\n" {
 		t.Fatalf("%q", out.String())
 	}
 }
