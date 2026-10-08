@@ -136,7 +136,8 @@ left by an older version) are reported, and `C` stops them.
 
 `t` opens the agent's session in its pod to ask for changes: the pod keeps a
 `shell` container (sharing `/work` and the CLIs' session dirs with the headless
-`agent` container) and kAinban runs `kubectl exec -it … -c shell` with
+`agent` container) and kAinban runs `kainban attach` (client-go exec, like
+`kubectl exec -it … -c shell`; the image has no kubectl) with
 `claude --continue`, `codex resume --last`, `copilot --continue` or
 `agy --continue`; leaving the CLI returns to the board. `T` opens a plain shell
 there. Agent pods stay until stopped with `x`.
