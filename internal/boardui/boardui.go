@@ -85,6 +85,7 @@ const (
 	confirmRestart
 	confirmDone
 	confirmOrphans
+	confirmAttach // t while the headless run is still working
 )
 
 type model struct {
@@ -396,7 +397,7 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t", "T":
 		if t != nil {
-			return m.attach(t, msg.String() == "T")
+			return m.attach(t, msg.String() == "T", false)
 		}
 	case "?":
 		m.mode = modeHelp
@@ -613,6 +614,8 @@ func (m *model) confirmQuestion() string {
 		return fmt.Sprintf("the agent of %q is still running. Stop it and start a new run? y/N", cardTitle(t))
 	case confirmDone:
 		return fmt.Sprintf("the agent of %q is still running. Move to Done and stop it? y/N", cardTitle(t))
+	case confirmAttach:
+		return fmt.Sprintf("the agent of %q is still working: its session will not show the run's progress until it finishes (o shows the output). Open it anyway? y/N", cardTitle(t))
 	}
 	q := fmt.Sprintf("delete %q?", cardTitle(t))
 	if len(t.LiveRuns()) > 0 {

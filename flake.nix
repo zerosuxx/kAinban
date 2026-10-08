@@ -69,6 +69,7 @@
               pkgs.procps
               pkgs.ncurses # terminfo for the TUIs
               pkgs.tmux
+              pkgs.tini # PID 1 of the agent pods' shell container (reaps tmux)
               # common project toolchains (latest LTS / stable)
               pkgs.nodejs
               pkgs.python3

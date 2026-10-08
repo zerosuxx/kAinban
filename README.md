@@ -83,7 +83,10 @@ it is passed as `--model` (`-m` for codex) to the headless run and to `t`, and
 recorded on each run. The Gemini API free tier has no quota for the Pro
 models, so without a ticket model agents run `agy` with
 `--model gemini-3.8-flash-medium` (chart value `agents.antigravityModel`;
-set it to `""` for agy's default model with a billed key).
+set it to `""` for agy's default model with a billed key). `agy -p` prints nothing until
+the answer, so its model retries (e.g. `agy: attempt 2 failed (Error 503 …),
+retrying in 5s` when the model is overloaded) are copied from its log into
+the output.
 
 ### Board
 
@@ -142,7 +145,11 @@ left by an older version) are reported, and `C` stops them.
 `agy --continue`, in a tmux session in the pod: `ctrl+z` detaches back to the
 board and leaves the CLI running, the next `t` re-attaches to it (a dropped
 connection loses nothing either), and leaving the CLI ends the session and
-returns to the board. `T` opens a plain shell there, in its own tmux session. Agent pods stay until stopped with `x`.
+returns to the board. While the headless run is still working, `t` asks
+first: the session is a second CLI on the same conversation and does not show
+the run's progress until it finishes (`o` does). `T` opens a plain shell there,
+in its own tmux session. The shell container runs under `tini`, which reaps
+the tmux servers. Agent pods stay until stopped with `x`.
 
 ```shell
 kubectl -n kainban exec -it deploy/kainban -- kainban board

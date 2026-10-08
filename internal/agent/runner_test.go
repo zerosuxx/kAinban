@@ -246,6 +246,15 @@ func TestModels(t *testing.T) {
 	if m, cmd := spawn(&board.Ticket{ID: "a", Title: "x", Agent: "antigravity"}); m != "gemini-flash" || !strings.Contains(cmd, `--model "$KAINBAN_MODEL"`) {
 		t.Fatalf("agy default model: %q %s", m, cmd)
 	}
+	if _, cmd := spawn(&board.Ticket{ID: "r", Title: "x", Agent: "antigravity"}); !strings.Contains(cmd, "attempt [0-9]+ failed") {
+		t.Fatalf("agy retries not shown: %s", cmd)
+	}
+	if _, cmd := spawn(&board.Ticket{ID: "s", Title: "x", Agent: "claude"}); strings.Contains(cmd, "attempt [0-9]+ failed") {
+		t.Fatalf("retry watcher is agy only: %s", cmd)
+	}
+	if p, _ := cs.CoreV1().Pods("kb").List(context.Background(), metav1.ListOptions{}); !strings.HasSuffix(p.Items[0].Spec.Containers[1].Command[2], "exec tini -- sleep infinity") {
+		t.Fatal("the shell container should run under tini")
+	}
 	if m, _ := spawn(&board.Ticket{ID: "b", Title: "x", Agent: "antigravity", Model: "gemini-3.8-flash-high"}); m != "gemini-3.8-flash-high" {
 		t.Fatalf("ticket model should win: %q", m)
 	}

@@ -449,8 +449,27 @@ func TestAttach(t *testing.T) {
 	}
 	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentRunning, Ticket: x.ID}
 	poll(m)
+	// The run is still working: t asks first, n cancels, T does not ask.
+	if _, cmd := m.Update(key("t")); cmd != nil || m.mode != modeConfirm || m.confirm != confirmAttach {
+		t.Fatalf("attach while working should ask: mode=%v", m.mode)
+	}
+	if !strings.Contains(m.confirmQuestion(), "still working") {
+		t.Fatalf("question: %q", m.confirmQuestion())
+	}
+	if _, cmd := m.Update(key("n")); cmd != nil || m.mode != modeBoard {
+		t.Fatal("n should cancel")
+	}
+	if _, cmd := m.Update(key("T")); cmd == nil {
+		t.Fatal("T should open the shell without asking")
+	}
+	m.Update(key("t"))
+	if _, cmd := m.Update(key("y")); cmd == nil {
+		t.Fatal("y should hand the terminal to a process")
+	}
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentCompleted, Ticket: x.ID}
+	poll(m)
 	if _, cmd := m.Update(key("t")); cmd == nil {
-		t.Fatal("attach should hand the terminal to a process")
+		t.Fatal("attach after the run should not ask")
 	}
 	m.Update(attachDoneMsg{})
 	if m.notice == "" {

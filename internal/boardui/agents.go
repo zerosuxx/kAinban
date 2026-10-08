@@ -369,6 +369,8 @@ func (m *model) confirmed(t *board.Ticket) (tea.Model, tea.Cmd) {
 		return m, m.stopRunsCmd(t, t.LiveRuns())
 	case confirmRestart:
 		return m.spawn(t, true)
+	case confirmAttach:
+		return m.attach(t, false, true)
 	case confirmDone:
 		if err := m.b.MoveTo(t, board.StatusDone); err != nil {
 			m.err = err.Error()
@@ -393,7 +395,9 @@ func (m *model) confirmed(t *board.Ticket) (tea.Model, tea.Cmd) {
 }
 
 // attach hands the terminal to the agent's session (or a shell) in its pod.
-func (m *model) attach(t *board.Ticket, shell bool) (tea.Model, tea.Cmd) {
+// While the headless run is still working, the session (a second CLI on the
+// same conversation) does not show its progress, so `t` asks first.
+func (m *model) attach(t *board.Ticket, shell, confirmed bool) (tea.Model, tea.Cmd) {
 	r := t.Current()
 	switch {
 	case m.opts.Agents == nil:
@@ -404,6 +408,9 @@ func (m *model) attach(t *board.Ticket, shell bool) (tea.Model, tea.Cmd) {
 		return m, nil
 	case r.Status == board.AgentWaiting:
 		m.err = "the agent pod is still starting"
+		return m, nil
+	case r.Status == board.AgentRunning && !shell && !confirmed:
+		m.mode, m.confirm = modeConfirm, confirmAttach
 		return m, nil
 	}
 	argv := m.opts.Agents.AttachCommand(r.Pod, r.Agent, shell)

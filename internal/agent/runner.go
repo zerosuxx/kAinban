@@ -263,8 +263,18 @@ var agentCommands = map[board.AgentType]string{
 	// final answer again to stdout; keep only the transcript.
 	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"} "$KAINBAN_PROMPT" </dev/null >/dev/null`,
 	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
-	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
+	"antigravity": agyRetries + `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 }
+
+// agyRetries copies agy's model retries ("attempt 2 failed (Error 503 ...),
+// retrying in 5s") from its log to stderr: `agy -p` prints nothing until the
+// answer, so without them a run waiting on an overloaded model looks stuck.
+// It follows the newest log, which is this run's, as agy starts first.
+const agyRetries = `( d="$HOME/.gemini/antigravity-cli/log"; f=""
+  for i in $(seq 120); do f=$(ls -t "$d"/cli-*.log 2>/dev/null | head -n 1); [ -n "$f" ] && break; sleep 1; done
+  [ -n "$f" ] && tail -n +1 -F "$f" 2>/dev/null | grep --line-buffered -E 'attempt [0-9]+ failed' |
+    sed -u -E 's/^.*\] Run: /agy: /' >&2 ) &
+`
 
 // setupScript prepares credentials like the chart's test agent, then runs
 // the agent in /work.
@@ -390,8 +400,9 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 			},
 			Containers: []corev1.Container{
 				container(agentContainer, r.cfg.Image, setupScript+run, env, mounts, &noEscalation, false),
-				// Keeps the pod and its sessions alive for `t` until x stops it.
-				container(shellContainer, r.cfg.Image, setupScript+"exec sleep infinity", env, mounts, &noEscalation, true),
+				// Keeps the pod and its sessions alive for `t` until x stops it;
+				// tini reaps the daemonized tmux servers.
+				container(shellContainer, r.cfg.Image, setupScript+"exec tini -- sleep infinity", env, mounts, &noEscalation, true),
 			},
 			Volumes: volumes,
 		},
