@@ -43,7 +43,14 @@ func TestSpawnOnlyMountsTheTicketsAgentCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if len(p.Spec.Containers) != 2 || p.Spec.Containers[0].Name != "agent" || p.Spec.Containers[1].Name != "shell" ||
+			!p.Spec.Containers[1].TTY || !strings.Contains(p.Spec.Containers[1].Command[2], "sleep infinity") {
+			t.Fatalf("%s: containers %+v", ag, p.Spec.Containers)
+		}
 		c := p.Spec.Containers[0]
+		if envNames(c)["CODEX_HOME"].Value != "/sessions/codex" || envNames(c)["CLAUDE_CONFIG_DIR"].Value != "/sessions/claude" {
+			t.Errorf("%s: session dirs not on the shared volume", ag)
+		}
 		env := envNames(c)
 		for _, n := range all {
 			_, has := env[n]
@@ -123,5 +130,38 @@ func TestFromEnv(t *testing.T) {
 	c, err := FromEnv("kb")
 	if err != nil || c.NodeSelector["a"] != "b" || c.Image != "img" {
 		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestStatusFromAgentContainer(t *testing.T) {
+	pod := func(st corev1.ContainerState) *corev1.Pod {
+		return &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "shell", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			{Name: "agent", State: st},
+		}}}
+	}
+	cases := []struct {
+		st   corev1.ContainerState
+		want board.AgentStatus
+	}{
+		{corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}, board.AgentRunning},
+		{corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}, board.AgentCompleted},
+		{corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 2}}, board.AgentError},
+	}
+	for _, c := range cases {
+		if got := phaseStatus(pod(c.st)); got != c.want {
+			t.Errorf("%+v: %s, want %s", c.st, got, c.want)
+		}
+	}
+}
+
+func TestAttachCommand(t *testing.T) {
+	r := NewRunner(nil, Config{Namespace: "kb", KubectlArgs: []string{"--context", "c"}})
+	got := strings.Join(r.AttachCommand("p1", "codex", false), " ")
+	if !strings.HasPrefix(got, "kubectl --context c -n kb exec -it p1 -c shell -- sh -c") || !strings.Contains(got, "codex resume --last") {
+		t.Fatalf("attach: %s", got)
+	}
+	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "bash -l") {
+		t.Fatalf("shell: %s", got)
 	}
 }

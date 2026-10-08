@@ -27,6 +27,12 @@ func runBoard(ctx context.Context, cf commonFlags, path string, stderr io.Writer
 	} else if cfg, err := agent.FromEnv(t.Namespace); err != nil {
 		opts.AgentsErr = err.Error()
 	} else {
+		if cf.kubeconfig != "" {
+			cfg.KubectlArgs = append(cfg.KubectlArgs, "--kubeconfig", cf.kubeconfig)
+		}
+		if cf.kubeContext != "" {
+			cfg.KubectlArgs = append(cfg.KubectlArgs, "--context", cf.kubeContext)
+		}
 		opts.Agents = agent.NewRunner(t.Client, cfg)
 	}
 	err := boardui.Run(ctx, board.FileStore{Path: path}, opts)

@@ -96,8 +96,15 @@ the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
 polls the pods every 5 s for the agent state and moves a ticket to Review when
 its agent finishes successfully. `o` shows the agent's output, following new
 lines while you are at the end; scroll it with `j/k`, `pgup/pgdn`, `g/G`, the
-mouse wheel or touch swipes (Termux). `x` stops the agent, deleting a ticket
+mouse wheel or touch swipes (Termux). `x` stops the agent (deletes its pod), deleting a ticket
 stops its agent.
+
+`t` opens the agent's session in its pod to ask for changes: the pod keeps a
+`shell` container (sharing `/work` and the CLIs' session dirs with the headless
+`agent` container) and kAinban runs `kubectl exec -it … -c shell` with
+`claude --continue`, `codex resume --last`, `copilot --continue` or
+`agy --continue`; leaving the CLI returns to the board. `T` opens a plain shell
+there. Agent pods stay until stopped with `x`.
 
 ```shell
 kubectl -n kainban exec -it deploy/kainban -- kainban board

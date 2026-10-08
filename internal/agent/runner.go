@@ -33,6 +33,7 @@ type Config struct {
 	Namespace    string
 	Image        string
 	NodeSelector map[string]string
+	KubectlArgs  []string // e.g. --context/--kubeconfig, for AttachCommand
 }
 
 // FromEnv reads KAINBAN_AGENT_IMAGE and KAINBAN_AGENT_NODE_SELECTOR (JSON).
@@ -90,7 +91,23 @@ func (r *Runner) Statuses(ctx context.Context) (map[string]board.AgentStatus, er
 	return out, nil
 }
 
+// phaseStatus maps a pod to the agent state. The "agent" container runs the
+// headless task and exits; the "shell" container keeps the pod (and the
+// session) around for `t`, so the agent container's state is what counts.
 func phaseStatus(p *corev1.Pod) board.AgentStatus {
+	for _, cs := range p.Status.ContainerStatuses {
+		if cs.Name != agentContainer {
+			continue
+		}
+		switch {
+		case cs.State.Terminated != nil && cs.State.Terminated.ExitCode == 0:
+			return board.AgentCompleted
+		case cs.State.Terminated != nil:
+			return board.AgentError
+		case cs.State.Running != nil:
+			return board.AgentRunning
+		}
+	}
 	switch p.Status.Phase {
 	case corev1.PodSucceeded:
 		return board.AgentCompleted
@@ -110,7 +127,7 @@ func phaseStatus(p *corev1.Pod) board.AgentStatus {
 
 // Logs returns the last lines of the agent's output.
 func (r *Runner) Logs(ctx context.Context, pod string, tail int64) (string, error) {
-	rc, err := r.client.CoreV1().Pods(r.cfg.Namespace).GetLogs(pod, &corev1.PodLogOptions{TailLines: &tail}).Stream(ctx)
+	rc, err := r.client.CoreV1().Pods(r.cfg.Namespace).GetLogs(pod, &corev1.PodLogOptions{Container: agentContainer, TailLines: &tail}).Stream(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -128,6 +145,31 @@ func (r *Runner) Stop(ctx context.Context, pod string) error {
 	return err
 }
 
+const (
+	agentContainer = "agent"
+	shellContainer = "shell"
+)
+
+// resumeCommands continue the agent's most recent session interactively in
+// /work (`t` on the board).
+var resumeCommands = map[board.AgentType]string{
+	"claude":      "claude --continue --dangerously-skip-permissions",
+	"codex":       "codex resume --last --dangerously-bypass-approvals-and-sandbox",
+	"copilot":     "copilot --continue --allow-all-tools",
+	"antigravity": "agy --continue --dangerously-skip-permissions",
+}
+
+// AttachCommand is the kubectl invocation that opens the agent's session
+// (or, with shell, a plain shell) in the pod's shell container.
+func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []string {
+	inner := "cd /work && exec " + resumeCommands[agent]
+	if shell || resumeCommands[agent] == "" {
+		inner = "cd /work && exec bash -l"
+	}
+	argv := append([]string{"kubectl"}, r.cfg.KubectlArgs...)
+	return append(argv, "-n", r.cfg.Namespace, "exec", "-it", pod, "-c", shellContainer, "--", "sh", "-c", inner)
+}
+
 // agentCommands is the headless invocation per agent; the prompt is in
 // $KAINBAN_PROMPT. Pods are the sandbox (bubblewrap does not work in them),
 // so the CLIs' own sandboxes and approval prompts are off.
@@ -141,7 +183,10 @@ var agentCommands = map[board.AgentType]string{
 // setupScript prepares credentials like the chart's test agent, then runs
 // the agent in /work.
 const setupScript = `set -e
-mkdir -p "$CODEX_HOME" /work
+mkdir -p /sessions/claude /sessions/codex /sessions/copilot /sessions/gemini /work
+for d in copilot gemini; do
+  [ -L "$HOME/.$d" ] || { rm -rf "$HOME/.$d"; ln -s "/sessions/$d" "$HOME/.$d"; }
+done
 if [ -f /secrets/codex/auth.json ]; then
   printf 'cli_auth_credentials_store = "file"\n' > "$CODEX_HOME/config.toml"
   cp /secrets/codex/auth.json "$CODEX_HOME/auth.json"
@@ -171,7 +216,9 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 	}
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: "/home/ubuntu"},
-		{Name: "CODEX_HOME", Value: "/home/ubuntu/.codex"},
+		// Session/config dirs live on the volume both containers share.
+		{Name: "CODEX_HOME", Value: "/sessions/codex"},
+		{Name: "CLAUDE_CONFIG_DIR", Value: "/sessions/claude"},
 		{Name: "KAINBAN_PROMPT", Value: Prompt(t)},
 		{Name: "KAINBAN_TICKET_ID", Value: t.ID},
 		{Name: "KAINBAN_AGENT", Value: string(t.Agent)},
@@ -181,10 +228,14 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 	volumes := []corev1.Volume{
 		{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "sessions", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
+	// /sessions holds the CLIs' session/config dirs, shared by both
+	// containers so `t` can resume what the headless run did.
 	mounts = append(mounts,
 		corev1.VolumeMount{Name: "work", MountPath: "/work"},
-		corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
+		corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"},
+		corev1.VolumeMount{Name: "sessions", MountPath: "/sessions"})
 
 	// Only the credentials of this ticket's agent.
 	switch t.Agent {
@@ -225,20 +276,30 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 				RunAsUser: &uid, RunAsGroup: &uid, FSGroup: &uid, RunAsNonRoot: &nonRoot,
 				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
-			Containers: []corev1.Container{{
-				Name:    "agent",
-				Image:   r.cfg.Image,
-				Command: []string{"sh", "-c", setupScript + run},
-				Env:     env,
-				SecurityContext: &corev1.SecurityContext{
-					AllowPrivilegeEscalation: &noEscalation,
-					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-				},
-				VolumeMounts: mounts,
-			}},
+			Containers: []corev1.Container{
+				container(agentContainer, r.cfg.Image, setupScript+run, env, mounts, &noEscalation, false),
+				// Keeps the pod and its sessions alive for `t` until x stops it.
+				container(shellContainer, r.cfg.Image, setupScript+"exec sleep infinity", env, mounts, &noEscalation, true),
+			},
 			Volumes: volumes,
 		},
 	}, nil
+}
+
+func container(name, image, script string, env []corev1.EnvVar, mounts []corev1.VolumeMount, noEscalation *bool, tty bool) corev1.Container {
+	return corev1.Container{
+		Name:    name,
+		Image:   image,
+		Command: []string{"sh", "-c", script},
+		Env:     env,
+		Stdin:   tty,
+		TTY:     tty,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: noEscalation,
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+		VolumeMounts: mounts,
+	}
 }
 
 func secretEnv(name, secret, key string) corev1.EnvVar {

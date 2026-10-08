@@ -100,6 +100,9 @@ func (f *fakeRunner) Statuses(context.Context) (map[string]board.AgentStatus, er
 	return f.status, nil
 }
 func (f *fakeRunner) Logs(context.Context, string, int64) (string, error) { return "hello\nworld", nil }
+func (f *fakeRunner) AttachCommand(pod string, _ board.AgentType, shell bool) []string {
+	return []string{"true", pod, fmt.Sprint(shell)}
+}
 func (f *fakeRunner) Stop(_ context.Context, pod string) error {
 	f.stopped = append(f.stopped, pod)
 	return nil
@@ -219,5 +222,27 @@ func TestLogsScroll(t *testing.T) {
 	m.Update(key("q"))
 	if m.mode != modeBoard {
 		t.Fatal("q should leave the logs")
+	}
+}
+
+func TestAttach(t *testing.T) {
+	b := board.New("t")
+	tk := b.Add("x")
+	tk.Agent = "claude"
+	m := newModel(b, &memStore{b: b}, Options{Agents: &fakeRunner{}})
+	if _, cmd := m.Update(key("t")); cmd != nil || !strings.Contains(m.err, "no agent pod") {
+		t.Fatalf("attach without pod: err=%q", m.err)
+	}
+	tk.AgentPod, tk.AgentStatus = "pod-x", board.AgentWaiting
+	if _, cmd := m.Update(key("t")); cmd != nil || !strings.Contains(m.err, "starting") {
+		t.Fatalf("attach while starting: err=%q", m.err)
+	}
+	tk.AgentStatus = board.AgentCompleted
+	if _, cmd := m.Update(key("t")); cmd == nil {
+		t.Fatal("attach should hand the terminal to a process")
+	}
+	m.Update(attachDoneMsg{})
+	if m.notice == "" {
+		t.Fatal("no notice after returning")
 	}
 }

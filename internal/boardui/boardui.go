@@ -5,6 +5,7 @@ package boardui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -23,6 +24,9 @@ type AgentRunner interface {
 	Statuses(ctx context.Context) (map[string]board.AgentStatus, error)
 	Logs(ctx context.Context, pod string, tail int64) (string, error)
 	Stop(ctx context.Context, pod string) error
+	// AttachCommand returns the argv that opens the agent's session (or a
+	// shell) in its pod, run with the terminal handed over.
+	AttachCommand(pod string, agent board.AgentType, shell bool) []string
 }
 
 // Options configures Run.
@@ -73,6 +77,7 @@ type (
 		ticketID string
 		err      error
 	}
+	attachDoneMsg struct{ err error }
 )
 
 type inputKind int
@@ -208,6 +213,25 @@ func (m *model) spawn(t *board.Ticket) (tea.Model, tea.Cmd) {
 	}
 }
 
+// attach hands the terminal to the agent's session (or a shell) in its pod.
+func (m *model) attach(t *board.Ticket, shell bool) (tea.Model, tea.Cmd) {
+	switch {
+	case m.opts.Agents == nil:
+		m.err = "agents unavailable: " + m.opts.AgentsErr
+		return m, nil
+	case t.AgentPod == "":
+		m.err = "no agent pod for this ticket (s starts one)"
+		return m, nil
+	case t.AgentStatus == board.AgentWaiting:
+		m.err = "the agent pod is still starting"
+		return m, nil
+	}
+	argv := m.opts.Agents.AttachCommand(t.AgentPod, t.Agent, shell)
+	return m, tea.ExecProcess(exec.Command(argv[0], argv[1:]...), func(err error) tea.Msg {
+		return attachDoneMsg{err}
+	})
+}
+
 func (m *model) logsCmd(pod string) tea.Cmd {
 	agents, ctx := m.opts.Agents, m.ctx
 	return func() tea.Msg {
@@ -301,6 +325,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.GotoBottom()
 		}
 		return m, nil
+	case attachDoneMsg:
+		if msg.err != nil {
+			m.err = "session: " + msg.err.Error()
+		} else {
+			m.notice = "back from the agent session"
+		}
+		return m, m.pollCmd()
 	case stoppedMsg:
 		if msg.err != nil {
 			m.err = "stop failed: " + msg.err.Error()
@@ -438,6 +469,10 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if t != nil && t.AgentPod != "" && m.opts.Agents != nil {
 			return m, m.stopCmd(t)
 		}
+	case "t", "T":
+		if t != nil {
+			return m.attach(t, msg.String() == "T")
+		}
 	case "?":
 		m.mode = modeHelp
 	}
@@ -571,7 +606,7 @@ func (m *model) View() tea.View {
 	case m.mode == modeLogs:
 		b.WriteString(subtle.Render(fmt.Sprintf("%3.0f%% · j/k ↑/↓ pgup/pgdn scroll (touch/wheel too) · g/G top/end · r refresh · q back", m.vp.ScrollPercent()*100)))
 	default:
-		b.WriteString(subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · o output · x stop · p prio · d delete · enter details · ? help · q quit"))
+		b.WriteString(subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · t session · o output · x stop · p prio · d del · enter details · ? help · q quit"))
 	}
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -729,6 +764,8 @@ Tickets        n new · e edit title · enter details (e there edits the descrip
                a cycle agent (claude, codex, copilot, antigravity, none)
                p cycle priority (P1 highest … P4) · d delete
 Agents         s start the ticket's agent in a pod (moves it to In Progress)
+               t open the agent's session in its pod (claude --continue, codex resume,
+                 ...) to ask for changes; exit it to return here · T plain shell there
                o show the agent's output (scroll with j/k, pgup/pgdn, wheel or touch)
                x stop the agent · a finished agent moves its ticket to Review
 Other          ? this help · q quit
