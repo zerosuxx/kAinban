@@ -139,8 +139,10 @@ left by an older version) are reported, and `C` stops them.
 `agent` container) and kAinban runs `kainban attach` (client-go exec, like
 `kubectl exec -it … -c shell`; the image has no kubectl) with
 `claude --continue`, `codex resume --last`, `copilot --continue` or
-`agy --continue`; leaving the CLI returns to the board. `T` opens a plain shell
-there. Agent pods stay until stopped with `x`.
+`agy --continue`, in a tmux session in the pod: `ctrl+z` detaches back to the
+board and leaves the CLI running, the next `t` re-attaches to it (a dropped
+connection loses nothing either), and leaving the CLI ends the session and
+returns to the board. `T` opens a plain shell there, in its own tmux session. Agent pods stay until stopped with `x`.
 
 ```shell
 kubectl -n kainban exec -it deploy/kainban -- kainban board

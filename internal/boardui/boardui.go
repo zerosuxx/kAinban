@@ -251,7 +251,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = "session: " + msg.err.Error()
 		} else {
-			m.notice = "back from the agent session"
+			m.notice = "back from the agent session (t re-attaches)"
 		}
 		return m, m.pollCmd()
 	case tea.KeyPressMsg:
@@ -946,7 +946,8 @@ Tickets        n new · e edit (popup with every field, incl. an optional model)
                p cycle priority (P1 highest … P4) · d delete
 Agents         s start the ticket's agent in a pod (moves it to In Progress)
                t open the agent's session in its pod (claude --continue, codex resume,
-                 ...) to ask for changes; exit it to return here · T plain shell there
+                 ...) to ask for changes, in tmux: ctrl+z returns here and keeps it
+                 running, t again re-attaches · T plain shell there (same)
                o show the agent's output (scroll with j/k, pgup/pgdn, wheel or touch)
                x stop the agent (all its pods) · C stop orphaned agent pods
                a finished agent moves its ticket to Review,

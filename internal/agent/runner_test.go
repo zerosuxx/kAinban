@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -165,8 +166,21 @@ func TestAttachCommand(t *testing.T) {
 	if !strings.HasPrefix(got, "attach --context c --namespace kb --pod p1 --container shell -- sh -c") || !strings.Contains(got, "codex resume --last") {
 		t.Fatalf("attach: %s", got)
 	}
-	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "exec bash") || strings.Contains(got, "bash -l") {
+	inner := argv[len(argv)-1]
+	for _, want := range []string{"exec tmux -u new-session -A -s agent 'codex resume --last", `\; bind -n C-z detach-client`, "TERM="} {
+		if !strings.Contains(inner, want) {
+			t.Fatalf("attach: missing %q in %s", want, inner)
+		}
+	}
+	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "-s shell 'bash'") || strings.Contains(got, "bash -l") {
 		t.Fatalf("shell: %s", got)
+	}
+}
+
+func TestShQuote(t *testing.T) {
+	out, err := exec.Command("sh", "-c", "printf %s "+shQuote(`it's "$X" \; ok`)).Output()
+	if err != nil || string(out) != `it's "$X" \; ok` {
+		t.Fatalf("shQuote: %q %v", out, err)
 	}
 }
 

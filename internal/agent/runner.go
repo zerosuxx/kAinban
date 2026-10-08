@@ -223,20 +223,35 @@ var resumeCommands = map[board.AgentType]string{
 
 // AttachCommand is the `kainban attach` invocation (client-go exec, no
 // kubectl needed) that opens the agent's session (or, with shell, a plain
-// shell) in the pod's shell container.
+// shell) in the pod's shell container. It runs in a tmux session (`agent` or
+// `shell`): ctrl+z detaches back to the board and leaves the CLI running,
+// the next `t` re-attaches to it, and a dropped connection loses nothing.
+// When the CLI exits, so does its tmux session.
 func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []string {
-	inner := "cd /work && exec " + resumeCommands[agent]
-	if shell || resumeCommands[agent] == "" {
+	session, cmd := "agent", resumeCommands[agent]
+	if shell || cmd == "" {
 		// Not a login shell: Ubuntu's /etc/profile calls `run-parts --regex`,
-		// which the image's busybox run-parts does not understand.
-		inner = "cd /work && exec bash"
+		// which busybox run-parts does not understand.
+		session, cmd = "shell", "bash"
 	}
+	term := os.Getenv("TERM") // exec does not pass it on; tmux needs it
+	if term == "" || term == "dumb" {
+		term = "xterm-256color"
+	}
+	inner := fmt.Sprintf("cd /work && TERM=%s exec tmux -u new-session -A -s %s %s"+
+		` \; set -g status off \; set -g escape-time 10 \; bind -n C-z detach-client`,
+		shQuote(term), session, shQuote(cmd))
 	self, err := os.Executable()
 	if err != nil {
 		self = "kainban"
 	}
 	argv := append([]string{self, "attach"}, r.cfg.AttachArgs...)
 	return append(argv, "--namespace", r.cfg.Namespace, "--pod", pod, "--container", shellContainer, "--", "sh", "-c", inner)
+}
+
+// shQuote quotes s as one sh word.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // agentCommands is the headless invocation per agent; the prompt is in
