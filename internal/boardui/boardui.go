@@ -38,6 +38,7 @@ func Run(ctx context.Context, store board.Store, opts Options) error {
 	}
 	m := newModel(b, store, opts)
 	m.ctx = ctx
+	m.animate = true
 	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
 }
@@ -105,6 +106,11 @@ type model struct {
 
 	orphans []string // agent pods no ticket run refers to
 
+	animate     bool   // marquee on (off in tests: no tickers)
+	marqueeOn   bool   // a marquee tick is scheduled
+	marqueeID   string // ticket whose title is scrolling
+	marqueeStep int
+
 	logsPod    string
 	logsLoaded bool           // first content arrived (then jump to the end)
 	vp         viewport.Model // modeLogs: scrollable agent output
@@ -157,6 +163,23 @@ func (m *model) save(notice string) {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(marqueeMsg); ok {
+		m.marqueeOn = false
+		if !m.needsMarquee() {
+			return m, nil
+		}
+		m.marqueeStep++
+	}
+	model, cmd := m.update(msg)
+	// Start the marquee whenever the selected title stops fitting.
+	if !m.marqueeOn && m.needsMarquee() {
+		m.marqueeOn = true
+		cmd = tea.Batch(cmd, tea.Tick(marqueeInterval, func(time.Time) tea.Msg { return marqueeMsg{} }))
+	}
+	return model, cmd
+}
+
+func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -572,12 +595,7 @@ func (m *model) footer() string {
 
 func (m *model) columnsView(height int) string {
 	n := len(m.b.Columns)
-	// On narrow (phone) screens show only the columns that fit, around the
-	// selected one.
-	const minColW = 18
-	shown := min(max((m.width+1)/(minColW+1), 1), n)
-	first := min(max(m.col-shown/2, 0), n-shown)
-	colW := max((m.width-(shown-1))/shown, minColW)
+	shown, first, colW := m.columnLayout()
 	visible := max((height-3)/cardLines, 1) // column titles, scroll markers
 
 	cols := make([]string, 0, shown)
@@ -635,6 +653,57 @@ func (m *model) columnsView(height int) string {
 	return board + "\n" + subtle.Render(strings.TrimSpace(hint)+"  (h/l)")
 }
 
+// columnLayout picks the columns that fit (on narrow phone screens only
+// those around the selected one) and their width.
+func (m *model) columnLayout() (shown, first, colW int) {
+	const minColW = 18
+	n := len(m.b.Columns)
+	shown = min(max((m.width+1)/(minColW+1), 1), n)
+	first = min(max(m.col-shown/2, 0), n-shown)
+	colW = max((m.width-(shown-1))/shown, minColW)
+	return shown, first, colW
+}
+
+func cardTitle(t *board.Ticket) string {
+	if t.Key != "" {
+		return t.Key + " " + t.Title
+	}
+	return t.Title
+}
+
+func cardInner(colW int) int { return max(colW-4, 8) } // border + padding
+
+// ---- marquee: the selected card's title scrolls when it does not fit ----
+
+type marqueeMsg struct{}
+
+const (
+	marqueeInterval = 200 * time.Millisecond
+	marqueePause    = 6 // ticks to show the start before scrolling
+	marqueeGap      = "   ·   "
+)
+
+// needsMarquee reports whether the selected card's title is cut off.
+func (m *model) needsMarquee() bool {
+	if !m.animate || m.mode != modeBoard {
+		return false
+	}
+	t := m.selected()
+	if t == nil {
+		return false
+	}
+	_, _, colW := m.columnLayout()
+	return ansi.StringWidth(cardTitle(t)) > cardInner(colW)
+}
+
+// marqueeText is the visible window of a scrolling title.
+func marqueeText(s string, width, step int) string {
+	loop := []rune(s + marqueeGap)
+	off := max(step-marqueePause, 0) % len(loop)
+	rotated := string(append(loop[off:], loop[:off]...))
+	return ansi.Truncate(rotated, width, "")
+}
+
 func joinWithGap(cols []string) []string {
 	out := make([]string, 0, 2*len(cols))
 	for i, c := range cols {
@@ -647,12 +716,16 @@ func joinWithGap(cols []string) []string {
 }
 
 func (m *model) card(t *board.Ticket, c board.Column, w int, selected bool) string {
-	inner := max(w-4, 8) // border + padding
-	title := t.Title
-	if t.Key != "" {
-		title = t.Key + " " + t.Title
+	inner := cardInner(w)
+	title := cardTitle(t)
+	if selected && m.animate && ansi.StringWidth(title) > inner {
+		if m.marqueeID != t.ID { // a new selection starts from the beginning
+			m.marqueeID, m.marqueeStep = t.ID, 0
+		}
+		title = marqueeText(title, inner, m.marqueeStep)
+	} else {
+		title = ansi.Truncate(title, inner, "…")
 	}
-	title = ansi.Truncate(title, inner, "…")
 	border := dimBorder
 	if selected {
 		border = lipgloss.Color(c.Color)

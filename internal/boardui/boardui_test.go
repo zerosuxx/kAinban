@@ -611,3 +611,43 @@ func TestEditPopup(t *testing.T) {
 		os.WriteFile(os.Getenv("BOARD_SNAPSHOT"), []byte(ansi.Strip(m.View().Content)), 0o644)
 	}
 }
+
+func TestMarquee(t *testing.T) {
+	if got := marqueeText("KAI-1 long title", 8, 0); got != "KAI-1 lo" {
+		t.Fatalf("start: %q", got)
+	}
+	if got := marqueeText("KAI-1 long title", 8, marqueePause+6); got != "long tit" {
+		t.Fatalf("scrolled: %q", got)
+	}
+	// Wraps around through the gap back to the start.
+	loop := len([]rune("abcdefghij" + marqueeGap))
+	if got := marqueeText("abcdefghij", 4, marqueePause+loop); got != "abcd" {
+		t.Fatalf("wrap: %q", got)
+	}
+
+	b := board.New("t")
+	short := b.Add("short")
+	long := b.Add("a very long title that cannot fit on a phone sized card at all")
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.width, m.height = 60, 24
+	m.selectTicket(long)
+	if m.needsMarquee() {
+		t.Fatal("no marquee without animation (tests, non-interactive)")
+	}
+	m.animate = true
+	if !m.needsMarquee() {
+		t.Fatal("long selected title should scroll")
+	}
+	if _, cmd := m.Update(marqueeMsg{}); cmd == nil || m.marqueeStep != 1 {
+		t.Fatalf("tick should advance and reschedule: step=%d", m.marqueeStep)
+	}
+	m.selectTicket(short)
+	if m.needsMarquee() {
+		t.Fatal("short title should not scroll")
+	}
+	m.selectTicket(long)
+	m.Update(key("?")) // help: no marquee outside the board
+	if m.needsMarquee() {
+		t.Fatal("marquee outside the board view")
+	}
+}
