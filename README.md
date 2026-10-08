@@ -207,7 +207,7 @@ go build -o kainban ./cmd/kainban
 helm lint charts/kainban
 helm template kainban charts/kainban
 nix build .#kainban                     # the binary (+ `k` alias)
-nix build .#image && ./result | docker load   # the image
+nix build .#image && ./result | docker load   # the whole image (CI: .#base + kainban)
 ```
 
 The image is built from [`flake.nix`](flake.nix) with
@@ -225,8 +225,13 @@ copy the `got:` hash).
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `gofmt`, `go vet`,
 `go test -race`, `helm lint` and `helm template` on every push and pull request.
 On `main`, `v*` tags and manual dispatch it builds `ghcr.io/zerosuxx/kainban`
-with Nix (`nix build .#image`, cached by magic-nix-cache; pushed with
-`crane`, which uploads only the layers ghcr does not have yet) natively for
-`linux/amd64` and `linux/arm64` and merges them into a multi-arch
+with Nix natively for `linux/amd64` and `linux/arm64`: the base image
+(`.#base`: everything but kainban) is tagged `base-<hash of its derivation>`
+and only built and pushed when that tag is missing, i.e. when `flake.nix` or
+`flake.lock` changed; kainban (`.#kainban`) is then appended to it as one
+layer with `crane`. A commit that only changes Go code therefore builds just
+the binary. Builds are cached by magic-nix-cache (GitHub Actions cache), and
+crane uploads only the layers ghcr does not have yet. The per-arch images are
+merged into a multi-arch
 manifest tagged `latest` (main), the branch name, `sha-<short>`, and
 `X.Y.Z` / `X.Y` for version tags.

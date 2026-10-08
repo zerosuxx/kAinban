@@ -73,7 +73,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write # magic-nix-cache
     strategy:
       fail-fast: false
       matrix:
@@ -102,10 +101,10 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
         with:
           determinate: false
+      # Only the GitHub Actions cache: FlakeHub needs an account.
       - uses: DeterminateSystems/magic-nix-cache-action@v15
-
-      - name: Build image
-        run: nix build .#image -L --out-link stream-image
+        with:
+          use-flakehub: false
 
       - uses: docker/login-action@v4
         with:
@@ -113,16 +112,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # crane (not docker push) checks which layers ghcr already has and
-      # uploads only the changed ones; the layers are reproducible, so most
-      # are already there. A fresh docker daemon re-uploads all of them.
-      - name: Push
+      # The image is the base (tools, CLIs, users; .#base) plus kainban as one
+      # layer on top. The base is tagged with its derivation's hash, which
+      # evaluation gives without building, and built and pushed only when
+      # that tag is not in the registry yet (flake.nix or flake.lock changed).
+      # crane uploads only the layers ghcr does not have.
+      - name: Base image
         run: |
-          ./stream-image > image.tar
-          ref=$(nix run --inputs-from . nixpkgs#crane -- push image.tar "$IMAGE:build-${GITHUB_SHA::7}-$ARCH")
-          echo "pushed $ref"
+          crane() { nix run --inputs-from . nixpkgs#crane -- "$@"; }
+          hash=$(basename "$(nix eval --raw .#base.outPath)" | cut -d- -f1)
+          base="$IMAGE:base-$hash"
+          if crane manifest "$base" >/dev/null 2>&1; then
+            echo "$base exists"
+          else
+            nix build .#base -L --out-link stream-base
+            ./stream-base > base.tar
+            crane push base.tar "$base"
+          fi
+          echo "BASE=$base" >> "$GITHUB_ENV"
+
+      - name: Image
+        run: |
+          crane() { nix run --inputs-from . nixpkgs#crane -- "$@"; }
+          nix build .#kainban -L --out-link kainban
+          mkdir -p layer/bin
+          install -m 0755 kainban/bin/kainban layer/bin/kainban
+          ln -s kainban layer/bin/k
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1 -C layer -cf kainban.tar bin
+          tag="$IMAGE:build-${GITHUB_SHA::7}-$ARCH"
+          crane append -b "$BASE" -f kainban.tar -t "$tag"
+          digest=$(crane digest "$tag")
+          echo "pushed $tag@$digest (base $BASE)"
           mkdir -p "$RUNNER_TEMP/digests"
-          touch "$RUNNER_TEMP/digests/${ref#*@sha256:}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
         env:
           ARCH: ${{ matrix.arch }}
 

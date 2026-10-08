@@ -85,11 +85,14 @@
             extraGroupLines = [ "ubuntu:x:1000:" ];
           };
 
-          image = pkgs.dockerTools.streamLayeredImage {
+          # The image without kainban. CI pushes it once per content hash
+          # (base-<hash of this derivation>) and appends kainban to it as
+          # one small layer, so a commit that only changes Go code needs
+          # neither these ~450 MB of store paths nor a full image build.
+          mkImage = { tag, extraContents ? [ ] }: pkgs.dockerTools.streamLayeredImage {
             name = "ghcr.io/zerosuxx/kainban";
-            tag = version;
-            contents = [
-              kainban
+            inherit tag;
+            contents = extraContents ++ [
               tools
               nss
               pkgs.dockerTools.binSh
@@ -122,9 +125,13 @@
               };
             };
           };
+
+          base = mkImage { tag = "base"; };
+          # The whole image in one build, for local use.
+          image = mkImage { tag = version; extraContents = [ kainban ]; };
         in
         {
-          inherit kainban tools image;
+          inherit kainban tools base image;
           default = kainban;
         });
     };
