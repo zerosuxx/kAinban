@@ -737,3 +737,31 @@ func TestNewTicketWithAgentStartsIt(t *testing.T) {
 		t.Fatal("ticket without agent started")
 	}
 }
+
+func TestDetailsPopupScrollsWithWheel(t *testing.T) {
+	b := board.New("t")
+	x := b.Add("Write docs")
+	var lines []string
+	for i := range 80 {
+		lines = append(lines, fmt.Sprintf("out %02d", i))
+	}
+	x.Runs = []*board.Run{{Agent: "codex", Pod: "p", PodGone: true, Status: board.AgentCompleted, Output: strings.Join(lines, "\n")}}
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.width, m.height = 60, 24
+	m.Update(key("enter"))
+	v := ansi.Strip(m.View().Content)
+	if !strings.Contains(v, "KAI-1 · Write docs") || !strings.Contains(v, "Backlog") {
+		t.Fatalf("details should pop up over the board:\n%s", v)
+	}
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatal("the details popup needs mouse events for the wheel")
+	}
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.vp.YOffset() == 0 {
+		t.Fatal("wheel should scroll the details")
+	}
+	if os.Getenv("BOARD_SNAPSHOT") != "" {
+		os.WriteFile(os.Getenv("BOARD_SNAPSHOT"), []byte(ansi.Strip(m.View().Content)), 0o644)
+	}
+}

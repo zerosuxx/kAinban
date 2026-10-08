@@ -497,8 +497,7 @@ func (m *model) View() tea.View {
 	var body string
 	switch m.mode {
 	case modeDetail:
-		m.vp.SetHeight(bodyH)
-		body = m.vp.View()
+		body = m.columnsView(bodyH) // the details pop up over the board
 	case modeHelp:
 		body = helpText
 	case modeLogs:
@@ -521,6 +520,8 @@ func (m *model) View() tea.View {
 		screen = m.overlay(screen, m.form.view(m.width))
 	case m.mode == modeConfirm:
 		screen = m.overlay(screen, m.confirmBox())
+	case m.mode == modeDetail:
+		screen = m.overlay(screen, m.detailBox())
 	}
 	if box := m.toastBox(); box != "" {
 		x := max(m.width-lipgloss.Width(box)-1, 0)
@@ -624,7 +625,7 @@ func (m *model) footer() string {
 	case modeConfirm:
 		return subtle.Render("y confirm · n/esc or any other key cancel")
 	case modeDetail:
-		return subtle.Render(fmt.Sprintf("%3.0f%% · j/k pgup/pgdn scroll (touch/wheel too) · g/G top/end · e edit description · q back", m.vp.ScrollPercent()*100))
+		return subtle.Render("j/k pgup/pgdn scroll (wheel/touch too) · g/G top/end · e edit · q/esc back")
 	case modeHelp:
 		return subtle.Render("any key back")
 	case modeLogs:
@@ -832,8 +833,34 @@ func orDash(s string) string {
 
 // openDetail fills the viewport with the selected ticket's details and its
 // saved agent output.
+// detailSize is the inner size of the details popup's viewport.
+func (m *model) detailSize() (w, h int) {
+	boxW := min(100, max(m.width-4, 30))
+	boxH := max(m.height-4, 8)
+	return boxW - 6, boxH - 4 // border 2 + padding 4; border 2 + heading 2
+}
+
+// detailBox is the scrollable details popup.
+func (m *model) detailBox() string {
+	w, h := m.detailSize()
+	m.vp.SetWidth(w)
+	m.vp.SetHeight(h)
+	head := "Details"
+	if t := m.selected(); t != nil {
+		head = t.Key + " · " + t.Title
+	}
+	head = ansi.Truncate(head, w-6, "…")
+	pct := subtle.Render(fmt.Sprintf("%3.0f%%", m.vp.ScrollPercent()*100))
+	gap := max(w-lipgloss.Width(head)-lipgloss.Width(pct), 1)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("12")).
+		Padding(0, 2).Width(w + 6).
+		Render(titleStyle.Render(head) + strings.Repeat(" ", gap) + pct + "\n\n" + m.vp.View())
+}
+
 func (m *model) openDetail() {
-	m.vp = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(m.logsHeight()))
+	w, h := m.detailSize()
+	m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 	m.vp.SoftWrap = true
 	m.vp.SetContent(m.detailText())
 }

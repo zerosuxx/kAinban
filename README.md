@@ -120,7 +120,8 @@ mouse wheel or touch swipes (Termux). `x` stops the agent after a y/N confirmati
 agent pods.
 
 Every run is kept on the ticket (agent, pod, status, times, saved output);
-the card shows the latest and the details list them all. Starting a new run
+the card shows the latest and the details (`enter`, a popup scrollable with
+the keys, the mouse wheel or touch) list them all. Starting a new run
 (`s`, also after switching the agent with `a`) stops the previous run's pod
 first, asking if it is still running. Moving a ticket to Done stops its agent
 pods (asking if one is still running). Agent pods that belong to no run (e.g.
