@@ -651,3 +651,31 @@ func TestMarquee(t *testing.T) {
 		t.Fatal("marquee outside the board view")
 	}
 }
+
+func TestToasts(t *testing.T) {
+	b := board.New("t")
+	b.Add("x")
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.width, m.height = 100, 30
+	m.Update(key("p")) // priority change -> notice
+	v := ansi.Strip(m.View().Content)
+	lines := strings.Split(v, "\n")
+	i := strings.Index(lines[2], "priority P")
+	if i < 0 || ansi.StringWidth(lines[2][:i]) < 50 || !strings.Contains(lines[1], "╮") {
+		t.Fatalf("toast should be top right:\n%s", v)
+	}
+	first := m.toastID
+	m.Update(key("p")) // a newer message
+	m.Update(toastDoneMsg{first})
+	if m.notice == "" {
+		t.Fatal("an older timer cleared a newer message")
+	}
+	m.Update(toastDoneMsg{m.toastID})
+	if m.notice != "" || m.toastBox() != "" {
+		t.Fatal("the toast should disappear")
+	}
+	m.Update(key("s")) // no agent: error toast
+	if !strings.Contains(m.toastBox(), "✗") {
+		t.Fatalf("error toast: %q", m.toastBox())
+	}
+}

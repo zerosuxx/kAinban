@@ -101,8 +101,9 @@ type model struct {
 	confirm confirmKind
 	form    *editForm
 
-	notice string
-	err    string
+	notice  string // shown as a toast; see toastBox
+	err     string
+	toastID int // the latest message; its timer clears it
 
 	orphans []string // agent pods no ticket run refers to
 
@@ -170,7 +171,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.marqueeStep++
 	}
+	if d, ok := msg.(toastDoneMsg); ok {
+		if d.id == m.toastID { // a newer message keeps its own timer
+			m.notice, m.err = "", ""
+		}
+		return m, nil
+	}
+	before := m.notice + "\x00" + m.err
 	model, cmd := m.update(msg)
+	// A new message pops up as a toast and disappears after a while.
+	if after := m.notice + "\x00" + m.err; after != before && (m.notice != "" || m.err != "") {
+		m.toastID++
+		if m.animate {
+			d, id := toastNotice, m.toastID
+			if m.err != "" {
+				d = toastError
+			}
+			cmd = tea.Batch(cmd, tea.Tick(d, func(time.Time) tea.Msg { return toastDoneMsg{id} }))
+		}
+	}
 	// Start the marquee whenever the selected title stops fitting.
 	if !m.marqueeOn && m.needsMarquee() {
 		m.marqueeOn = true
@@ -300,7 +319,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	m.notice, m.err = "", ""
 	t := m.selected()
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -467,13 +485,9 @@ func (m *model) View() tea.View {
 
 	// Messages, questions and inputs go to the top so the key bar at the
 	// bottom always stays visible.
-	status, footer := m.statusLine(), m.footer()
-	wrap := lipgloss.NewStyle().Width(max(m.width, 20))
-	if status != "" {
-		status = wrap.Render(status)
-	}
-	footer = wrap.Render(footer)
-	bodyH := max(m.height-3-lineCount(status)-lineCount(footer), 5)
+	// Messages pop up as toasts (top right), so the board keeps every line.
+	footer := lipgloss.NewStyle().Width(max(m.width, 20)).Render(m.footer())
+	bodyH := max(m.height-2-lineCount(footer), 5)
 
 	var body string
 	switch m.mode {
@@ -490,7 +504,7 @@ func (m *model) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(head + "\n" + status + "\n\n")
+	b.WriteString(head + "\n\n")
 	b.WriteString(body)
 	if pad := bodyH - lineCount(body); pad > 0 {
 		b.WriteString(strings.Repeat("\n", pad))
@@ -502,6 +516,13 @@ func (m *model) View() tea.View {
 		screen = m.overlay(screen, m.form.view(m.width))
 	case m.mode == modeConfirm:
 		screen = m.overlay(screen, m.confirmBox())
+	}
+	if box := m.toastBox(); box != "" {
+		x := max(m.width-lipgloss.Width(box)-1, 0)
+		screen = lipgloss.NewCompositor(
+			lipgloss.NewLayer(screen),
+			lipgloss.NewLayer(box).X(x).Y(1).Z(2),
+		).Render()
 	}
 	v := tea.NewView(screen)
 	v.AltScreen = true
@@ -541,16 +562,27 @@ func lineCount(s string) int {
 	return strings.Count(strings.TrimRight(s, "\n"), "\n") + 1
 }
 
-// statusLine is the line under the header: an input, a question, or the
-// last message.
-func (m *model) statusLine() string {
-	switch {
-	case m.err != "":
-		return errStyle.Render(m.err)
-	case m.notice != "":
-		return okStyle.Render(m.notice)
+// Toasts: a message shows top right and fades after a while.
+type toastDoneMsg struct{ id int }
+
+const (
+	toastNotice = 3 * time.Second
+	toastError  = 6 * time.Second
+)
+
+func (m *model) toastBox() string {
+	text, color, icon := m.notice, lipgloss.Color("10"), "✓ "
+	if m.err != "" {
+		text, color, icon = m.err, lipgloss.Color("9"), "✗ "
 	}
-	return ""
+	if text == "" {
+		return ""
+	}
+	w := min(46, max(m.width-4, 20))
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(color).
+		Padding(0, 1).Width(w).
+		Render(lipgloss.NewStyle().Foreground(color).Render(icon) + text)
 }
 
 func (m *model) confirmQuestion() string {

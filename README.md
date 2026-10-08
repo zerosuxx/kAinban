@@ -100,8 +100,9 @@ reused. The key is on the card, in the details, in the agent's prompt
 for now the first of claude, codex, copilot, antigravity with credentials,
 later agent profiles; the card then shows e.g. `auto→claude`), or a fixed one.
 Confirmations (stop, delete, Done with a running agent, restart, orphans)
-are popups; messages appear under the header, the key bar always stays at
-the bottom, and on narrow screens only the columns that fit are shown.
+are popups; messages pop up as toasts in the top right corner and disappear
+after a few seconds (errors a bit later), the key bar always stays at the
+bottom, and on narrow screens only the columns that fit are shown.
 
 `s` starts the ticket's agent in its own pod, from the
 orchestrator's image, and moves the ticket to In Progress. The pod runs the CLI
