@@ -52,7 +52,7 @@ const AgentAuto AgentType = "auto"
 // AgentTypes lists the selectable agents in cycling order ("" = none).
 var AgentTypes = []AgentType{"", AgentAuto, "claude", "codex", "copilot", "antigravity"}
 
-// AgentStatus is the state of a ticket's agent.
+// AgentStatus is the state of an agent run.
 type AgentStatus string
 
 const (
@@ -61,26 +61,128 @@ const (
 	AgentWaiting   AgentStatus = "waiting"
 	AgentCompleted AgentStatus = "completed"
 	AgentError     AgentStatus = "error"
+	AgentStopped   AgentStatus = "stopped" // stopped by the user before it finished
 )
+
+// Finished reports whether the run is over (successfully or not).
+func (s AgentStatus) Finished() bool {
+	return s == AgentCompleted || s == AgentError || s == AgentStopped
+}
+
+// Active reports whether the run is starting or running.
+func (s AgentStatus) Active() bool { return s == AgentWaiting || s == AgentRunning }
+
+// Run is one agent run of a ticket, kept after it ends.
+type Run struct {
+	Agent      AgentType   `json:"agent"` // the agent that ran (auto resolved)
+	Requested  AgentType   `json:"requested,omitempty"`
+	Pod        string      `json:"pod,omitempty"`
+	PodGone    bool        `json:"pod_gone,omitempty"` // pod deleted
+	Status     AgentStatus `json:"status"`
+	Output     string      `json:"output,omitempty"` // tail, saved when it ended
+	StartedAt  time.Time   `json:"started_at"`
+	FinishedAt *time.Time  `json:"finished_at,omitempty"`
+}
+
+// Live reports whether the run still has a pod.
+func (r *Run) Live() bool { return r.Pod != "" && !r.PodGone }
+
+// SetStatus updates the status and the finish time.
+func (r *Run) SetStatus(s AgentStatus) {
+	r.Status = s
+	if s.Finished() && r.FinishedAt == nil {
+		f := now().UTC()
+		r.FinishedAt = &f
+	}
+}
 
 // Ticket is one card.
 type Ticket struct {
-	ID          string      `json:"id"`
-	Title       string      `json:"title"`
-	Description string      `json:"description,omitempty"`
-	Status      Status      `json:"status"`
-	Priority    int         `json:"priority"` // 1 (highest) .. 4
-	Labels      []string    `json:"labels,omitempty"`
-	Agent       AgentType   `json:"agent,omitempty"`
-	AgentStatus AgentStatus `json:"agent_status"`
-	AgentPod    string      `json:"agent_pod,omitempty"` // pod running the agent
-	AgentRun    AgentType   `json:"agent_run,omitempty"` // agent actually started (resolves auto)
-	// AgentOutput is the tail of the agent's output, saved when it finished
-	// so it outlives the pod.
-	AgentOutput string    `json:"agent_output,omitempty"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"`
+	Status      Status    `json:"status"`
+	Priority    int       `json:"priority"` // 1 (highest) .. 4
+	Labels      []string  `json:"labels,omitempty"`
+	Agent       AgentType `json:"agent,omitempty"` // chosen agent (may be auto)
+	Runs        []*Run    `json:"runs,omitempty"`  // oldest first
 	Branch      string    `json:"branch,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+
+	// Single-run fields of older board files, migrated into Runs on load.
+	LegacyStatus AgentStatus `json:"agent_status,omitempty"`
+	LegacyPod    string      `json:"agent_pod,omitempty"`
+	LegacyAgent  AgentType   `json:"agent_run,omitempty"`
+	LegacyOutput string      `json:"agent_output,omitempty"`
+}
+
+// Current returns the latest run, or nil.
+func (t *Ticket) Current() *Run {
+	if len(t.Runs) == 0 {
+		return nil
+	}
+	return t.Runs[len(t.Runs)-1]
+}
+
+// RunStatus is the latest run's status (AgentNone without runs).
+func (t *Ticket) RunStatus() AgentStatus {
+	if r := t.Current(); r != nil {
+		return r.Status
+	}
+	return AgentNone
+}
+
+// LiveRuns returns the runs that still have a pod.
+func (t *Ticket) LiveRuns() []*Run {
+	var out []*Run
+	for _, r := range t.Runs {
+		if r.Live() {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// RunByPod finds the run of a pod.
+func (t *Ticket) RunByPod(pod string) *Run {
+	for _, r := range t.Runs {
+		if r.Pod == pod {
+			return r
+		}
+	}
+	return nil
+}
+
+// StartRun appends a new run in the waiting state.
+func (t *Ticket) StartRun() *Run {
+	r := &Run{Agent: t.Agent, Requested: t.Agent, Status: AgentWaiting, StartedAt: now().UTC()}
+	t.Runs = append(t.Runs, r)
+	t.Touch()
+	return r
+}
+
+// migrateLegacy turns the single-run fields of an older board into a Run.
+func (t *Ticket) migrateLegacy() {
+	if t.LegacyPod != "" || t.LegacyOutput != "" || (t.LegacyStatus != "" && t.LegacyStatus != AgentNone) {
+		ag := t.LegacyAgent
+		if ag == "" {
+			ag = t.Agent
+		}
+		st := t.LegacyStatus
+		if st == "" {
+			st = AgentNone
+		}
+		t.Runs = append(t.Runs, &Run{Agent: ag, Requested: t.Agent, Pod: t.LegacyPod, Status: st,
+			Output: t.LegacyOutput, StartedAt: t.UpdatedAt})
+	}
+	t.LegacyStatus, t.LegacyPod, t.LegacyAgent, t.LegacyOutput = "", "", "", ""
+}
+
+// PodState is what the cluster reports about an agent pod.
+type PodState struct {
+	Status AgentStatus
+	Ticket string // ticket ID label
 }
 
 // Board is the whole state persisted by a Store.
@@ -100,12 +202,11 @@ var now = time.Now
 // Add creates a ticket in the first column.
 func (b *Board) Add(title string) *Ticket {
 	t := &Ticket{
-		ID:          newID(),
-		Title:       title,
-		Status:      b.Columns[0].Status,
-		Priority:    3,
-		AgentStatus: AgentNone,
-		CreatedAt:   now().UTC(),
+		ID:        newID(),
+		Title:     title,
+		Status:    b.Columns[0].Status,
+		Priority:  3,
+		CreatedAt: now().UTC(),
 	}
 	t.UpdatedAt = t.CreatedAt
 	b.Tickets = append(b.Tickets, t)
@@ -177,6 +278,14 @@ func (b *Board) MoveTo(t *Ticket, s Status) error {
 	return nil
 }
 
+// Migrate upgrades a board loaded from an older file.
+func (b *Board) Migrate() {
+	b.EnsureDefaultColumns()
+	for _, t := range b.Tickets {
+		t.migrateLegacy()
+	}
+}
+
 // EnsureDefaultColumns adds default columns missing from an older board.
 func (b *Board) EnsureDefaultColumns() {
 	for _, c := range DefaultColumns() {
@@ -200,8 +309,8 @@ func (t *Ticket) CycleAgent() {
 
 // EffectiveAgent is the agent that runs (or would run) for the ticket.
 func (t *Ticket) EffectiveAgent() AgentType {
-	if t.AgentRun != "" {
-		return t.AgentRun
+	if r := t.Current(); r != nil && r.Agent != "" && r.Agent != AgentAuto {
+		return r.Agent
 	}
 	return t.Agent
 }

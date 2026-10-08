@@ -114,19 +114,39 @@ func (r *Runner) chooseAgent(ctx context.Context, _ *board.Ticket) (board.AgentT
 	return "", fmt.Errorf("auto: no agent has credentials yet (run kainban auth)")
 }
 
-// Statuses maps every agent pod's name to the ticket agent status.
-func (r *Runner) Statuses(ctx context.Context) (map[string]board.AgentStatus, error) {
+// Statuses maps every agent pod's name to its state and ticket.
+func (r *Runner) Statuses(ctx context.Context) (map[string]board.PodState, error) {
 	pods, err := r.client.CoreV1().Pods(r.cfg.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: LabelComponent + "=" + ComponentAgent,
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]board.AgentStatus{}
+	out := map[string]board.PodState{}
 	for _, p := range pods.Items {
-		out[p.Name] = phaseStatus(&p)
+		if p.DeletionTimestamp != nil {
+			continue // being deleted: treat as gone
+		}
+		out[p.Name] = board.PodState{Status: phaseStatus(&p), Ticket: p.Labels[LabelTicket]}
 	}
 	return out, nil
+}
+
+// StopTicket deletes every agent pod of a ticket, including ones the board
+// no longer tracks.
+func (r *Runner) StopTicket(ctx context.Context, ticketID string) error {
+	pods, err := r.client.CoreV1().Pods(r.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: LabelComponent + "=" + ComponentAgent + "," + LabelTicket + "=" + ticketID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, p := range pods.Items {
+		if err := r.Stop(ctx, p.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // phaseStatus maps a pod to the agent state. The "agent" container runs the

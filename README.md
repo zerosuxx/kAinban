@@ -106,7 +106,15 @@ agent's output (up to 64 KB) is then saved with the ticket and shown, scrollable
 in the details (`enter`), even after the pod is gone. `o` shows the agent's output, following new
 lines while you are at the end; scroll it with `j/k`, `pgup/pgdn`, `g/G`, the
 mouse wheel or touch swipes (Termux). `x` stops the agent after a y/N confirmation (deletes its pod with its
-`/work` and session), deleting a ticket stops its agent.
+`/work` and session; the output is kept), deleting a ticket stops all its
+agent pods.
+
+Every run is kept on the ticket (agent, pod, status, times, saved output);
+the card shows the latest and the details list them all. Starting a new run
+(`s`, also after switching the agent with `a`) stops the previous run's pod
+first, asking if it is still running. Moving a ticket to Done stops its agent
+pods (asking if one is still running). Agent pods that belong to no run (e.g.
+left by an older version) are reported, and `C` stops them.
 
 `t` opens the agent's session in its pod to ask for changes: the pod keeps a
 `shell` container (sharing `/work` and the CLIs' session dirs with the headless

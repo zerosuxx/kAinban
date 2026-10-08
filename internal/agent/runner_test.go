@@ -111,8 +111,8 @@ func TestStatusesAndStop(t *testing.T) {
 	want := map[string]board.AgentStatus{"run": board.AgentRunning, "ok": board.AgentCompleted, "bad": board.AgentError,
 		"pull": board.AgentError, "new": board.AgentWaiting}
 	for k, v := range want {
-		if st[k] != v {
-			t.Errorf("%s: %s, want %s", k, st[k], v)
+		if st[k].Status != v {
+			t.Errorf("%s: %s, want %s", k, st[k].Status, v)
 		}
 	}
 	if err := r.Stop(ctx, "run"); err != nil {
@@ -190,5 +190,22 @@ func TestAutoPicksFirstAgentWithCredentials(t *testing.T) {
 	p, _ := cs.CoreV1().Pods("kb").Get(ctx, name, metav1.GetOptions{})
 	if p.Labels[LabelAgent] != "codex" || !strings.Contains(p.Spec.Containers[0].Command[2], "codex exec") {
 		t.Fatalf("pod not for codex: %v", p.Labels)
+	}
+}
+
+func TestStopTicketDeletesAllItsPods(t *testing.T) {
+	ctx := context.Background()
+	pod := func(name, ticket string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kb",
+			Labels: map[string]string{LabelComponent: ComponentAgent, LabelTicket: ticket}}}
+	}
+	cs := fake.NewSimpleClientset(pod("a1", "t1"), pod("a2", "t1"), pod("b1", "t2"))
+	r := NewRunner(cs, Config{Namespace: "kb", Image: "i"})
+	if err := r.StopTicket(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := r.Statuses(ctx)
+	if len(st) != 1 || st["b1"].Ticket != "t2" {
+		t.Fatalf("left: %v", st)
 	}
 }

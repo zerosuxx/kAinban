@@ -5,7 +5,6 @@ package boardui
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -17,17 +16,6 @@ import (
 
 	"github.com/zerosuxx/kainban/internal/board"
 )
-
-// AgentRunner starts and watches agent pods (internal/agent.Runner).
-type AgentRunner interface {
-	Spawn(ctx context.Context, t *board.Ticket) (pod string, agent board.AgentType, err error)
-	Statuses(ctx context.Context) (map[string]board.AgentStatus, error)
-	Logs(ctx context.Context, pod string, tail int64) (string, error)
-	Stop(ctx context.Context, pod string) error
-	// AttachCommand returns the argv that opens the agent's session (or a
-	// shell) in its pod, run with the terminal handed over.
-	AttachCommand(pod string, agent board.AgentType, shell bool) []string
-}
 
 // Options configures Run.
 type Options struct {
@@ -63,26 +51,12 @@ const (
 )
 
 type (
-	pollMsg    struct{}
-	statusMsg  struct{ statuses map[string]board.AgentStatus }
-	spawnedMsg struct {
-		ticketID, pod string
-		agent         board.AgentType
-		err           error
-	}
+	pollMsg struct{}
 	logsMsg struct {
 		pod, text string
 		err       error
 	}
-	stoppedMsg struct {
-		ticketID string
-		err      error
-	}
 	attachDoneMsg struct{ err error }
-	outputMsg     struct {
-		ticketID, text string
-		err            error
-	}
 )
 
 type confirmKind int
@@ -90,6 +64,9 @@ type confirmKind int
 const (
 	confirmDelete confirmKind = iota
 	confirmStop
+	confirmRestart
+	confirmDone
+	confirmOrphans
 )
 
 type inputKind int
@@ -118,6 +95,8 @@ type model struct {
 	notice string
 	err    string
 
+	orphans []string // agent pods no ticket run refers to
+
 	logsPod    string
 	logsLoaded bool           // first content arrived (then jump to the end)
 	vp         viewport.Model // modeLogs: scrollable agent output
@@ -139,147 +118,6 @@ func (m *model) Init() tea.Cmd {
 		return nil
 	}
 	return m.pollCmd()
-}
-
-func (m *model) pollCmd() tea.Cmd {
-	agents, ctx := m.opts.Agents, m.ctx
-	return func() tea.Msg {
-		st, err := agents.Statuses(ctx)
-		if err != nil {
-			return statusMsg{} // transient; keep the last known state
-		}
-		return statusMsg{st}
-	}
-}
-
-func (m *model) findTicket(id string) *board.Ticket {
-	for _, t := range m.b.Tickets {
-		if t.ID == id {
-			return t
-		}
-	}
-	return nil
-}
-
-// applyStatuses updates the tickets' agent state from their pods.
-func (m *model) applyStatuses(st map[string]board.AgentStatus) tea.Cmd {
-	if st == nil {
-		return nil
-	}
-	changed := false
-	var cmds []tea.Cmd
-	for _, t := range m.b.Tickets {
-		if t.AgentPod == "" {
-			continue
-		}
-		s, ok := st[t.AgentPod]
-		if !ok {
-			s = board.AgentNone // pod gone
-		}
-		if s != t.AgentStatus {
-			t.AgentStatus = s
-			t.Touch()
-			changed = true
-			// A finished agent hands the ticket over for review, a failed
-			// one blocks it.
-			target := map[board.AgentStatus]board.Status{
-				board.AgentCompleted: board.StatusReview, board.AgentError: board.StatusBlocked,
-			}[s]
-			if target != "" {
-				cmds = append(cmds, m.captureCmd(t)) // keep the output with the ticket
-			}
-			if target != "" && t.Status == board.StatusInProgress {
-				wasSelected := m.selected() == t
-				if m.b.MoveTo(t, target) == nil {
-					if wasSelected {
-						m.selectTicket(t) // the cursor follows the card
-					}
-					m.notice = t.Title + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent " + string(s) + ")"
-				}
-			}
-		}
-	}
-	if changed {
-		if err := m.store.Save(m.b); err != nil {
-			m.err = "save failed: " + err.Error()
-		}
-	}
-	return tea.Batch(cmds...)
-}
-
-// maxSavedOutput caps the agent output kept in the board file.
-const maxSavedOutput = 64 << 10
-
-// captureCmd fetches the finished agent's output to save it on the ticket.
-func (m *model) captureCmd(t *board.Ticket) tea.Cmd {
-	if m.opts.Agents == nil || t.AgentPod == "" {
-		return nil
-	}
-	agents, ctx, id, pod := m.opts.Agents, m.ctx, t.ID, t.AgentPod
-	return func() tea.Msg {
-		text, err := agents.Logs(ctx, pod, 2000)
-		return outputMsg{ticketID: id, text: text, err: err}
-	}
-}
-
-func (m *model) spawn(t *board.Ticket) (tea.Model, tea.Cmd) {
-	switch {
-	case m.opts.Agents == nil:
-		m.err = "agents unavailable: " + m.opts.AgentsErr
-		return m, nil
-	case t.Agent == "":
-		m.err = "pick an agent first (a)"
-		return m, nil
-	case t.AgentStatus == board.AgentRunning || t.AgentStatus == board.AgentWaiting:
-		m.err = "agent already running (x stops it)"
-		return m, nil
-	}
-	if t.Status == board.StatusBacklog || t.Status == board.StatusBlocked {
-		if err := m.b.MoveTo(t, board.StatusInProgress); err != nil {
-			m.err = "cannot start: " + err.Error()
-			return m, nil
-		}
-		m.selectTicket(t)
-	}
-	t.AgentStatus, t.AgentRun = board.AgentWaiting, ""
-	m.save("starting " + string(t.Agent) + " for " + t.Title + "…")
-	agents, ctx, tc := m.opts.Agents, m.ctx, *t
-	return m, func() tea.Msg {
-		pod, agent, err := agents.Spawn(ctx, &tc)
-		return spawnedMsg{ticketID: tc.ID, pod: pod, agent: agent, err: err}
-	}
-}
-
-// attach hands the terminal to the agent's session (or a shell) in its pod.
-func (m *model) attach(t *board.Ticket, shell bool) (tea.Model, tea.Cmd) {
-	switch {
-	case m.opts.Agents == nil:
-		m.err = "agents unavailable: " + m.opts.AgentsErr
-		return m, nil
-	case t.AgentPod == "":
-		m.err = "no agent pod for this ticket (s starts one)"
-		return m, nil
-	case t.AgentStatus == board.AgentWaiting:
-		m.err = "the agent pod is still starting"
-		return m, nil
-	}
-	argv := m.opts.Agents.AttachCommand(t.AgentPod, t.EffectiveAgent(), shell)
-	return m, tea.ExecProcess(exec.Command(argv[0], argv[1:]...), func(err error) tea.Msg {
-		return attachDoneMsg{err}
-	})
-}
-
-func (m *model) logsCmd(pod string) tea.Cmd {
-	agents, ctx := m.opts.Agents, m.ctx
-	return func() tea.Msg {
-		text, err := agents.Logs(ctx, pod, 500)
-		return logsMsg{pod: pod, text: text, err: err}
-	}
-}
-
-func (m *model) stopCmd(t *board.Ticket) tea.Cmd {
-	agents, ctx, id, pod := m.opts.Agents, m.ctx, t.ID, t.AgentPod
-	return func() tea.Msg { return stoppedMsg{ticketID: id, err: agents.Stop(ctx, pod)} }
 }
 
 // selected returns the selected ticket, or nil in an empty column.
@@ -327,42 +165,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollMsg:
 		return m, m.pollCmd()
 	case statusMsg:
-		capture := m.applyStatuses(msg.statuses)
+		capture := m.applyStatuses(msg.states)
 		next := tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
-		if m.mode == modeLogs {
+		if m.mode == modeLogs && m.logsPod != "" {
 			return m, tea.Batch(next, capture, m.logsCmd(m.logsPod)) // follow the output
 		}
 		return m, tea.Batch(next, capture)
 	case outputMsg:
-		t := m.findTicket(msg.ticketID)
-		if t == nil || msg.err != nil {
-			return m, nil // keep whatever was saved before
-		}
-		out := strings.TrimRight(msg.text, "\n")
-		if len(out) > maxSavedOutput {
-			out = "…\n" + out[len(out)-maxSavedOutput:]
-		}
-		t.AgentOutput = out
-		if err := m.store.Save(m.b); err != nil {
-			m.err = "save failed: " + err.Error()
-		}
-		if m.mode == modeDetail && m.selected() == t {
-			m.openDetail()
-		}
+		m.applyOutput(msg)
 		return m, nil
 	case spawnedMsg:
-		t := m.findTicket(msg.ticketID)
-		if t == nil {
-			return m, nil
-		}
-		if msg.err != nil {
-			t.AgentStatus = board.AgentError
-			m.save("")
-			m.err = "start failed: " + msg.err.Error()
-			return m, nil
-		}
-		t.AgentPod, t.AgentRun = msg.pod, msg.agent
-		m.save("started " + string(msg.agent) + " in " + msg.pod)
+		m.applySpawned(msg)
+		return m, nil
+	case stoppedMsg:
+		m.applyStopped(msg)
 		return m, nil
 	case logsMsg:
 		if msg.pod != m.logsPod {
@@ -386,16 +202,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "back from the agent session"
 		}
 		return m, m.pollCmd()
-	case stoppedMsg:
-		if msg.err != nil {
-			m.err = "stop failed: " + msg.err.Error()
-			return m, nil
-		}
-		if t := m.findTicket(msg.ticketID); t != nil {
-			t.AgentStatus, t.AgentPod = board.AgentNone, ""
-			m.save("stopped agent of " + t.Title)
-		}
-		return m, nil
 	case tea.KeyPressMsg:
 		switch m.mode {
 		case modeInput:
@@ -407,18 +213,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notice = "cancelled"
 				return m, nil
 			}
-			switch m.confirm {
-			case confirmStop:
-				return m, m.stopCmd(t)
-			default: // confirmDelete
-				var cmd tea.Cmd
-				if t.AgentPod != "" && m.opts.Agents != nil {
-					cmd = m.stopCmd(t)
-				}
-				m.b.Delete(t)
-				m.save("deleted " + t.Title)
-				return m, cmd
-			}
+			return m.confirmed(t)
 		case modeLogs:
 			switch msg.String() {
 			case "ctrl+c":
@@ -494,9 +289,9 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		m.row[m.col] = len(m.b.Column(m.b.Columns[m.col].Status)) - 1
 	case "space", "L", "shift+right":
-		m.move(t, 1)
+		return m, m.move(t, 1)
 	case "H", "shift+left", "backspace":
-		m.move(t, -1)
+		return m, m.move(t, -1)
 	case "n":
 		return m.startInput(inputNew)
 	case "e":
@@ -521,34 +316,34 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if t != nil {
 			m.mode = modeDetail
 			m.openDetail()
-			// Finished before its output was saved (e.g. by an older version)?
-			if t.AgentOutput == "" && (t.AgentStatus == board.AgentCompleted || t.AgentStatus == board.AgentError) {
-				return m, m.captureCmd(t)
+			// Finished runs whose output was not saved yet (older versions).
+			var cmds []tea.Cmd
+			for _, r := range t.Runs {
+				if r.Output == "" && r.Status.Finished() && r.Live() {
+					cmds = append(cmds, m.captureCmd(t, r))
+				}
 			}
+			return m, tea.Batch(cmds...)
 		}
 	case "s":
 		if t != nil {
-			return m.spawn(t)
+			return m.spawn(t, false)
 		}
 	case "o":
 		if t != nil {
-			if t.AgentPod == "" || m.opts.Agents == nil {
-				m.err = "no agent pod for this ticket (s starts one)"
-				return m, nil
-			}
-			m.vp = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(m.logsHeight()))
-			m.vp.SoftWrap = true // long lines readable on narrow (phone) screens
-			m.vp.SetContent(subtle.Render("loading…"))
-			m.mode, m.logsPod, m.logsLoaded = modeLogs, t.AgentPod, false
-			return m, m.logsCmd(t.AgentPod)
+			return m.openLogs(t)
 		}
 	case "x":
 		switch {
 		case t == nil:
-		case t.AgentPod == "" || m.opts.Agents == nil:
+		case len(t.LiveRuns()) == 0 || m.opts.Agents == nil:
 			m.err = "no agent pod for this ticket"
 		default:
 			m.mode, m.confirm = modeConfirm, confirmStop
+		}
+	case "C":
+		if len(m.orphans) > 0 && m.opts.Agents != nil {
+			m.mode, m.confirm = modeConfirm, confirmOrphans
 		}
 	case "t", "T":
 		if t != nil {
@@ -561,16 +356,28 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) move(t *board.Ticket, delta int) {
+func (m *model) move(t *board.Ticket, delta int) tea.Cmd {
 	if t == nil {
-		return
+		return nil
 	}
+	from := t.Status
 	if err := m.b.Move(t, delta); err != nil {
 		m.err = err.Error()
-		return
+		return nil
+	}
+	if t.Status == board.StatusDone && from != board.StatusDone && len(t.LiveRuns()) > 0 {
+		if t.RunStatus().Active() {
+			t.Status = from // ask first: the running agent's work would be lost
+			m.mode, m.confirm = modeConfirm, confirmDone
+			return nil
+		}
+		m.selectTicket(t)
+		m.save(fmt.Sprintf("%s → Done, stopping its agent pods", t.Title))
+		return m.stopRunsCmd(t, t.LiveRuns())
 	}
 	m.selectTicket(t)
 	m.save(fmt.Sprintf("%s → %s", t.Title, m.b.Columns[m.col].Name))
+	return nil
 }
 
 func (m *model) startInput(k inputKind) (tea.Model, tea.Cmd) {
@@ -722,16 +529,24 @@ func (m *model) statusLine() string {
 }
 
 func (m *model) confirmQuestion() string {
+	if m.confirm == confirmOrphans {
+		return fmt.Sprintf("stop %d agent pod(s) that belong to no ticket run? y/N", len(m.orphans))
+	}
 	t := m.selected()
 	if t == nil {
 		return ""
 	}
-	if m.confirm == confirmStop {
-		return fmt.Sprintf("stop the agent of %q? Its pod, /work and session are deleted. y/N", t.Title)
+	switch m.confirm {
+	case confirmStop:
+		return fmt.Sprintf("stop the agent of %q? Its pod, /work and session are deleted (the output is kept). y/N", t.Title)
+	case confirmRestart:
+		return fmt.Sprintf("the agent of %q is still running. Stop it and start a new run? y/N", t.Title)
+	case confirmDone:
+		return fmt.Sprintf("the agent of %q is still running. Move to Done and stop it? y/N", t.Title)
 	}
 	q := fmt.Sprintf("delete %q?", t.Title)
-	if t.AgentPod != "" {
-		q += " Its agent pod is stopped too."
+	if len(t.LiveRuns()) > 0 {
+		q += " Its agent pods are stopped too."
 	}
 	return q + " y/N"
 }
@@ -846,25 +661,35 @@ func (m *model) card(t *board.Ticket, c board.Column, w int, selected bool) stri
 }
 
 func agentBadge(t *board.Ticket) string {
-	if t.Agent == "" {
+	if t.Agent == "" && t.Current() == nil {
 		return subtle.Render("no agent")
 	}
 	name := string(t.Agent)
-	if t.Agent == board.AgentAuto && t.AgentRun != "" {
-		name = "auto→" + string(t.AgentRun)
+	if r := t.Current(); r != nil && t.Agent == board.AgentAuto && r.Agent != board.AgentAuto {
+		name = "auto→" + string(r.Agent)
 	}
 	s := lipgloss.NewStyle().Foreground(lipgloss.Color(agentColors[t.EffectiveAgent()])).Render(name)
-	switch t.AgentStatus {
-	case board.AgentRunning:
-		s += " " + okStyle.Render("●")
-	case board.AgentWaiting:
-		s += " " + lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("◐")
-	case board.AgentCompleted:
-		s += " " + okStyle.Render("✓")
-	case board.AgentError:
-		s += " " + errStyle.Render("✗")
+	s += " " + statusIcon(t.RunStatus())
+	if n := len(t.Runs); n > 1 {
+		s += subtle.Render(fmt.Sprintf(" #%d", n))
 	}
-	return s
+	return strings.TrimRight(s, " ")
+}
+
+func statusIcon(s board.AgentStatus) string {
+	switch s {
+	case board.AgentRunning:
+		return okStyle.Render("●")
+	case board.AgentWaiting:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("◐")
+	case board.AgentCompleted:
+		return okStyle.Render("✓")
+	case board.AgentError:
+		return errStyle.Render("✗")
+	case board.AgentStopped:
+		return subtle.Render("■")
+	}
+	return ""
 }
 
 func priorityStyle(p int) lipgloss.Style {
@@ -877,13 +702,6 @@ func agentName(a board.AgentType) string {
 		return "none"
 	}
 	return string(a)
-}
-
-func agentRunSuffix(t *board.Ticket) string {
-	if t.Agent == board.AgentAuto && t.AgentRun != "" {
-		return " → " + string(t.AgentRun)
-	}
-	return ""
 }
 
 func orDash(s string) string {
@@ -911,9 +729,8 @@ func (m *model) detailText() string {
 		{"Title", t.Title},
 		{"Status", col.Name},
 		{"Priority", fmt.Sprintf("P%d", t.Priority)},
-		{"Agent", agentName(t.Agent) + agentRunSuffix(t) + " (" + string(t.AgentStatus) + ")"},
+		{"Agent", agentName(t.Agent)},
 		{"Branch", orDash(t.Branch)},
-		{"Pod", orDash(t.AgentPod)},
 		{"ID", t.ID},
 		{"Created", t.CreatedAt.Local().Format("2006-01-02 15:04")},
 		{"Updated", t.UpdatedAt.Local().Format("2006-01-02 15:04")},
@@ -928,13 +745,32 @@ func (m *model) detailText() string {
 	}
 	b.WriteString("\n" + desc + "\n")
 
-	switch {
-	case t.AgentOutput != "":
-		b.WriteString("\n" + titleStyle.Render("Agent output") + "\n" + t.AgentOutput + "\n")
-	case t.AgentStatus == board.AgentRunning || t.AgentStatus == board.AgentWaiting:
-		b.WriteString("\n" + subtle.Render("Agent is running — its output is saved here when it finishes (o shows it live).") + "\n")
-	case t.AgentStatus == board.AgentCompleted || t.AgentStatus == board.AgentError:
-		b.WriteString("\n" + subtle.Render("Fetching the agent output…") + "\n")
+	// Runs, newest first, each with its saved output.
+	for i := len(t.Runs) - 1; i >= 0; i-- {
+		r := t.Runs[i]
+		head := fmt.Sprintf("Run #%d · %s · %s %s · %s", i+1, r.Agent, statusIcon(r.Status), r.Status,
+			r.StartedAt.Local().Format("01-02 15:04"))
+		if r.FinishedAt != nil {
+			head += " → " + r.FinishedAt.Local().Format("15:04")
+		}
+		pod := r.Pod
+		switch {
+		case pod == "":
+			pod = "—"
+		case r.PodGone:
+			pod += " (deleted)"
+		}
+		b.WriteString("\n" + titleStyle.Render(head) + "\n" + subtle.Render("pod "+pod) + "\n")
+		switch {
+		case r.Output != "":
+			b.WriteString(r.Output + "\n")
+		case r.Status.Active():
+			b.WriteString(subtle.Render("running — the output is saved here when it ends (o shows it live)") + "\n")
+		case r.Live():
+			b.WriteString(subtle.Render("fetching the output…") + "\n")
+		default:
+			b.WriteString(subtle.Render("(no output saved)") + "\n")
+		}
 	}
 	return b.String()
 }
@@ -949,12 +785,16 @@ Agents         s start the ticket's agent in a pod (moves it to In Progress)
                t open the agent's session in its pod (claude --continue, codex resume,
                  ...) to ask for changes; exit it to return here · T plain shell there
                o show the agent's output (scroll with j/k, pgup/pgdn, wheel or touch)
-               x stop the agent · a finished agent moves its ticket to Review,
+               x stop the agent (all its pods) · C stop orphaned agent pods
+               a finished agent moves its ticket to Review,
                  a failed one to Blocked (space/s there retries in In Progress)
 Other          ? this help · q quit
 
 In Progress has a WIP limit of 3; moving a 4th card there is refused.
 Blocked is a side column: moving skips it, moving out of it goes to In Progress.
+Moving a ticket to Done stops its agent pods (asks if one is still running);
+s on a ticket with a previous run stops that pod first. Every run and its
+output stay listed in the details.
 `
 
 func (m *model) logsHeight() int { return max(m.height-8, 5) }
@@ -962,5 +802,9 @@ func (m *model) logsHeight() int { return max(m.height-8, 5) }
 // logsView shows the scrollable agent output; it follows new output while
 // scrolled to the end.
 func (m *model) logsView() string {
-	return subtle.Render("output of "+m.logsPod) + "\n\n" + m.vp.View() + "\n"
+	src := "saved output (pod deleted)"
+	if m.logsPod != "" {
+		src = "output of " + m.logsPod
+	}
+	return subtle.Render(src) + "\n\n" + m.vp.View() + "\n"
 }

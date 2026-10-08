@@ -3,6 +3,7 @@ package board
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,5 +96,50 @@ func TestOldBoardGetsBlockedColumn(t *testing.T) {
 	b, err := FileStore{Path: path}.Load()
 	if err != nil || b.ColumnIndex(StatusBlocked) != 4 || !b.Columns[4].Side {
 		t.Fatalf("columns %+v %v", b.Columns, err)
+	}
+}
+
+func TestLegacySingleRunMigrates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	old := `{"name":"old","tickets":[{"id":"t1","title":"x","status":"review","priority":3,"agent":"auto","agent_status":"completed","agent_pod":"p1","agent_run":"claude","agent_output":"done!"},{"id":"t2","title":"y","status":"backlog","priority":3,"agent_status":"none"}]}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := FileStore{Path: path}
+	b, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := b.Tickets[0].Current()
+	if r == nil || r.Pod != "p1" || r.Agent != "claude" || r.Requested != AgentAuto || r.Status != AgentCompleted || r.Output != "done!" {
+		t.Fatalf("migrated run: %+v", r)
+	}
+	if b.Tickets[1].Current() != nil {
+		t.Fatal("ticket without a run got one")
+	}
+	if err := s.Save(b); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "agent_pod") || strings.Contains(string(data), "agent_status") {
+		t.Fatalf("legacy fields written back: %s", data)
+	}
+}
+
+func TestRunHelpers(t *testing.T) {
+	b := New("t")
+	x := b.Add("x")
+	x.Agent = "claude"
+	if x.RunStatus() != AgentNone || x.Current() != nil {
+		t.Fatal("new ticket has a run")
+	}
+	r := x.StartRun()
+	r.Pod = "p"
+	if !r.Live() || len(x.LiveRuns()) != 1 || x.RunByPod("p") != r {
+		t.Fatal("live run not found")
+	}
+	r.SetStatus(AgentCompleted)
+	if r.FinishedAt == nil || !r.Status.Finished() || r.Status.Active() {
+		t.Fatal("finish not recorded")
 	}
 }

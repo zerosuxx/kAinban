@@ -71,7 +71,8 @@ func TestViewShowsColumnsAndCards(t *testing.T) {
 	b := board.New("t")
 	b.Add("Write the orchestrator").Agent = "codex"
 	x := b.Add("Review PR #12")
-	x.Agent, x.AgentStatus = "claude", board.AgentRunning
+	x.Agent = "claude"
+	x.Runs = []*board.Run{{Agent: "claude", Pod: "p", Status: board.AgentRunning}}
 	b.Move(x, 2)
 	m := newModel(b, &memStore{b: b}, Options{AppVersion: "1.2.3"})
 	m.width, m.height = 150, 30
@@ -86,68 +87,128 @@ func TestViewShowsColumnsAndCards(t *testing.T) {
 	}
 }
 
+// fakeRunner simulates the cluster: pods live in a map.
 type fakeRunner struct {
-	spawned []string
-	stopped []string
-	status  map[string]board.AgentStatus
+	pods     map[string]board.PodState
+	spawned  []string
+	stopped  []string
+	logs     string
+	n        int
+	spawnErr error
+}
+
+func newFake() *fakeRunner {
+	return &fakeRunner{pods: map[string]board.PodState{}, logs: "hello\nworld"}
 }
 
 func (f *fakeRunner) Spawn(_ context.Context, t *board.Ticket) (string, board.AgentType, error) {
-	f.spawned = append(f.spawned, t.ID)
+	if f.spawnErr != nil {
+		return "", "", f.spawnErr
+	}
+	f.n++
+	pod := fmt.Sprintf("pod-%s-%d", t.ID, f.n)
+	f.spawned = append(f.spawned, pod)
+	f.pods[pod] = board.PodState{Status: board.AgentWaiting, Ticket: t.ID}
 	ag := t.Agent
 	if ag == board.AgentAuto {
 		ag = "codex"
 	}
-	return "pod-" + t.ID, ag, nil
+	return pod, ag, nil
 }
-func (f *fakeRunner) Statuses(context.Context) (map[string]board.AgentStatus, error) {
-	return f.status, nil
+func (f *fakeRunner) Statuses(context.Context) (map[string]board.PodState, error) {
+	out := map[string]board.PodState{}
+	for k, v := range f.pods {
+		out[k] = v
+	}
+	return out, nil
 }
-func (f *fakeRunner) Logs(context.Context, string, int64) (string, error) { return "hello\nworld", nil }
-func (f *fakeRunner) AttachCommand(pod string, _ board.AgentType, shell bool) []string {
-	return []string{"true", pod, fmt.Sprint(shell)}
+func (f *fakeRunner) Logs(_ context.Context, pod string, _ int64) (string, error) {
+	return f.logs + " (" + pod + ")", nil
 }
 func (f *fakeRunner) Stop(_ context.Context, pod string) error {
 	f.stopped = append(f.stopped, pod)
+	delete(f.pods, pod)
 	return nil
 }
-
-// run executes a command and feeds its message back, like the runtime.
-func run(m *model, cmd tea.Cmd) {
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			m.Update(msg)
+func (f *fakeRunner) StopTicket(_ context.Context, id string) error {
+	for pod, s := range f.pods {
+		if s.Ticket == id {
+			f.Stop(context.Background(), pod)
 		}
 	}
+	return nil
+}
+func (f *fakeRunner) AttachCommand(pod string, _ board.AgentType, shell bool) []string {
+	return []string{"true", pod, fmt.Sprint(shell)}
+}
+
+// run executes a command (and batches) and feeds the messages back.
+func run(m *model, cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	switch msg := cmd().(type) {
+	case nil:
+	case tea.BatchMsg:
+		for _, c := range msg {
+			run(m, c)
+		}
+	default:
+		if _, isTick := msg.(pollMsg); isTick {
+			return
+		}
+		_, next := m.Update(msg)
+		if _, isStatus := msg.(statusMsg); !isStatus { // avoid the endless poll loop
+			run(m, next)
+		}
+	}
+}
+
+// poll applies the fake cluster's pod states (without the 5 s ticker).
+func poll(m *model) {
+	st, _ := m.opts.Agents.Statuses(context.Background())
+	run(m, m.applyStatuses(st))
+}
+
+func agentBoard(t *testing.T) (*board.Board, *board.Ticket, *fakeRunner, *model) {
+	t.Helper()
+	b := board.New("t")
+	x := b.Add("Fix login")
+	x.Agent = "claude"
+	fr := newFake()
+	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
+	m.width, m.height = 140, 30
+	return b, x, fr, m
 }
 
 func TestSpawnFlow(t *testing.T) {
 	b := board.New("t")
 	tk := b.Add("Fix login")
-	st := &memStore{b: b}
-	fr := &fakeRunner{status: map[string]board.AgentStatus{}}
-	m := newModel(b, st, Options{Agents: fr})
+	fr := newFake()
+	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
 
-	_, cmd := m.Update(key("s"))
-	if cmd != nil || m.err == "" || len(fr.spawned) != 0 {
+	if _, cmd := m.Update(key("s")); cmd != nil || m.err == "" {
 		t.Fatal("spawn without agent should be refused")
 	}
 	m.Update(key("a"))
 	m.Update(key("a")) // auto -> claude
-	_, cmd = m.Update(key("s"))
+	_, cmd := m.Update(key("s"))
 	run(m, cmd)
-	if len(fr.spawned) != 1 || tk.AgentPod != "pod-"+tk.ID || tk.Status != board.StatusInProgress || tk.AgentStatus != board.AgentWaiting {
-		t.Fatalf("after spawn: %+v spawned=%v", tk, fr.spawned)
+	r := tk.Current()
+	if len(fr.spawned) != 1 || r == nil || r.Pod != fr.spawned[0] || r.Agent != "claude" ||
+		tk.Status != board.StatusInProgress || r.Status != board.AgentWaiting {
+		t.Fatalf("after spawn: %+v run=%+v", tk, r)
 	}
-	_, cmd = m.Update(key("s"))
-	if cmd != nil || len(fr.spawned) != 1 {
-		t.Fatal("second spawn while waiting should be refused")
+	// Still running: s asks before restarting.
+	if _, cmd := m.Update(key("s")); cmd != nil || m.mode != modeConfirm || m.confirm != confirmRestart {
+		t.Fatal("restart while running should ask")
 	}
+	m.Update(key("n"))
 
-	fr.status["pod-"+tk.ID] = board.AgentCompleted
-	m.applyStatuses(fr.status)
-	if tk.AgentStatus != board.AgentCompleted {
-		t.Fatalf("status: %s", tk.AgentStatus)
+	fr.pods[r.Pod] = board.PodState{Status: board.AgentCompleted, Ticket: tk.ID}
+	poll(m)
+	if r.Status != board.AgentCompleted || tk.Status != board.StatusReview || !strings.Contains(r.Output, "world") || r.FinishedAt == nil {
+		t.Fatalf("finished: status=%s ticket=%s out=%q", r.Status, tk.Status, r.Output)
 	}
 
 	_, cmd = m.Update(key("o"))
@@ -155,7 +216,7 @@ func TestSpawnFlow(t *testing.T) {
 	if m.mode != modeLogs || !strings.Contains(m.logsView(), "world") {
 		t.Fatalf("logs: mode=%v %q", m.mode, m.logsView())
 	}
-	m.Update(key("q")) // back to the board
+	m.Update(key("q"))
 
 	_, cmd = m.Update(key("x"))
 	if cmd != nil || m.mode != modeConfirm {
@@ -163,8 +224,137 @@ func TestSpawnFlow(t *testing.T) {
 	}
 	_, cmd = m.Update(key("y"))
 	run(m, cmd)
-	if len(fr.stopped) != 1 || tk.AgentPod != "" || tk.AgentStatus != board.AgentNone {
-		t.Fatalf("stop: %+v stopped=%v", tk, fr.stopped)
+	if len(fr.stopped) != 1 || r.Live() || r.Output == "" || r.Status != board.AgentCompleted {
+		t.Fatalf("stop: %+v stopped=%v", r, fr.stopped)
+	}
+}
+
+func TestRestartStopsPreviousPodAndKeepsHistory(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	first := x.Current()
+	fr.pods[first.Pod] = board.PodState{Status: board.AgentError, Ticket: x.ID}
+	poll(m) // -> Blocked, output saved
+	if x.Status != board.StatusBlocked {
+		t.Fatalf("status %s", x.Status)
+	}
+	m.selectTicket(x)
+	m.Update(key("a")) // claude -> codex: switching the agent keeps the old run
+	_, cmd = m.Update(key("s"))
+	run(m, cmd)
+	if len(x.Runs) != 2 || first.Live() || !slicesContains(fr.stopped, first.Pod) {
+		t.Fatalf("previous pod not stopped: runs=%d stopped=%v", len(x.Runs), fr.stopped)
+	}
+	if first.Output == "" || first.Status != board.AgentError || x.Current().Agent != "codex" {
+		t.Fatalf("history lost: first=%+v current=%+v", first, x.Current())
+	}
+	if len(fr.pods) != 1 {
+		t.Fatalf("pods left: %v", fr.pods)
+	}
+	m.Update(key("enter"))
+	v := ansi.Strip(m.View().Content)
+	if !strings.Contains(v, "Run #2 · codex") || !strings.Contains(v, "Run #1 · claude") {
+		t.Fatalf("details should list both runs:\n%s", v)
+	}
+}
+
+func slicesContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDoneStopsPods(t *testing.T) {
+	b, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	r := x.Current()
+
+	// Running: moving to Done asks first and stays put on "no".
+	b.MoveTo(x, board.StatusReview)
+	m.selectTicket(x)
+	fr.pods[r.Pod] = board.PodState{Status: board.AgentRunning, Ticket: x.ID}
+	poll(m)
+	m.Update(key("space"))
+	if m.mode != modeConfirm || m.confirm != confirmDone || x.Status != board.StatusReview {
+		t.Fatalf("done while running should ask: mode=%v status=%s", m.mode, x.Status)
+	}
+	m.Update(key("n"))
+	if x.Status != board.StatusReview || len(fr.stopped) != 0 {
+		t.Fatal("cancelled done changed something")
+	}
+	m.Update(key("space"))
+	_, cmd = m.Update(key("y"))
+	run(m, cmd)
+	if x.Status != board.StatusDone || r.Live() || r.Status != board.AgentStopped || len(fr.pods) != 0 {
+		t.Fatalf("done: status=%s run=%+v pods=%v", x.Status, r, fr.pods)
+	}
+
+	// Finished agent: Done stops the pod without asking.
+	y := b.Add("y")
+	y.Agent = "codex"
+	m.selectTicket(y)
+	_, cmd = m.Update(key("s"))
+	run(m, cmd)
+	ry := y.Current()
+	fr.pods[ry.Pod] = board.PodState{Status: board.AgentCompleted, Ticket: y.ID}
+	poll(m) // -> Review
+	m.selectTicket(y)
+	_, cmd = m.Update(key("space"))
+	run(m, cmd)
+	if y.Status != board.StatusDone || ry.Live() || ry.Status != board.AgentCompleted || ry.Output == "" {
+		t.Fatalf("done after finish: status=%s run=%+v", y.Status, ry)
+	}
+}
+
+func TestDeleteStopsAllPodsOfTicket(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	fr.pods["stray"] = board.PodState{Status: board.AgentRunning, Ticket: x.ID} // untracked
+	m.Update(key("d"))
+	_, cmd = m.Update(key("y"))
+	run(m, cmd)
+	if len(fr.pods) != 0 {
+		t.Fatalf("pods left: %v", fr.pods)
+	}
+}
+
+func TestOrphans(t *testing.T) {
+	_, _, fr, m := agentBoard(t)
+	fr.pods["lost-1"] = board.PodState{Status: board.AgentCompleted, Ticket: "gone"}
+	poll(m)
+	if len(m.orphans) != 1 || !strings.Contains(m.notice, "C stops") {
+		t.Fatalf("orphans=%v notice=%q", m.orphans, m.notice)
+	}
+	m.Update(key("C"))
+	if m.mode != modeConfirm {
+		t.Fatal("C should ask")
+	}
+	_, cmd := m.Update(key("y"))
+	run(m, cmd)
+	if len(fr.pods) != 0 {
+		t.Fatalf("orphan not stopped: %v", fr.pods)
+	}
+}
+
+func TestPodDeletedOutsideMarksRunGone(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	r := x.Current()
+	delete(fr.pods, r.Pod)
+	poll(m)
+	if r.Live() || r.Status != board.AgentError {
+		t.Fatalf("run %+v", r)
 	}
 }
 
@@ -178,41 +368,35 @@ func TestSpawnWithoutCluster(t *testing.T) {
 	}
 }
 
-func TestFinishedAgentMovesToReview(t *testing.T) {
-	b := board.New("t")
-	ok, bad := b.Add("ok"), b.Add("bad")
-	for _, x := range []*board.Ticket{ok, bad} {
-		b.Move(x, 1)
-		x.Agent, x.AgentStatus, x.AgentPod = "claude", board.AgentRunning, "pod-"+x.Title
-	}
-	m := newModel(b, &memStore{b: b}, Options{})
-	m.applyStatuses(map[string]board.AgentStatus{"pod-ok": board.AgentCompleted, "pod-bad": board.AgentError})
-	if ok.Status != board.StatusReview || bad.Status != board.StatusBlocked {
-		t.Fatalf("ok=%s bad=%s", ok.Status, bad.Status)
+func TestSpawnFailureRecordedOnRun(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	fr.spawnErr = fmt.Errorf("boom")
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	if r := x.Current(); r == nil || r.Status != board.AgentError || !strings.Contains(r.Output, "boom") {
+		t.Fatalf("run %+v", r)
 	}
 }
 
-type longLogsRunner struct{ fakeRunner }
-
-func (longLogsRunner) Logs(context.Context, string, int64) (string, error) {
+func TestLogsScroll(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
 	var lines []string
 	for i := range 200 {
 		lines = append(lines, fmt.Sprintf("line %03d", i))
 	}
-	return strings.Join(lines, "\n"), nil
-}
-
-func TestLogsScroll(t *testing.T) {
-	b := board.New("t")
-	tk := b.Add("x")
-	tk.Agent, tk.AgentPod, tk.AgentStatus = "codex", "pod-x", board.AgentRunning
-	m := newModel(b, &memStore{b: b}, Options{Agents: &longLogsRunner{}})
+	fr.logs = strings.Join(lines, "\n")
 	m.width, m.height = 80, 20
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentRunning, Ticket: x.ID}
+	poll(m)
 
-	_, cmd := m.Update(key("o"))
+	_, cmd = m.Update(key("o"))
 	run(m, cmd)
 	if m.mode != modeLogs || !m.vp.AtBottom() || !strings.Contains(m.logsView(), "line 199") {
-		t.Fatalf("should open at the end: mode=%v view=%q", m.mode, m.logsView())
+		t.Fatalf("should open at the end: mode=%v", m.mode)
 	}
 	m.Update(key("k"))
 	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
@@ -223,8 +407,7 @@ func TestLogsScroll(t *testing.T) {
 	if !strings.Contains(m.logsView(), "line 000") {
 		t.Fatal("g should jump to the top")
 	}
-	// A refresh while scrolled up must not yank the view to the end.
-	run(m, m.logsCmd("pod-x"))
+	run(m, m.logsCmd(m.logsPod))
 	if m.vp.AtBottom() {
 		t.Fatal("refresh moved the view while scrolled up")
 	}
@@ -234,19 +417,30 @@ func TestLogsScroll(t *testing.T) {
 	}
 }
 
-func TestAttach(t *testing.T) {
+func TestSavedOutputAfterPodGone(t *testing.T) {
 	b := board.New("t")
-	tk := b.Add("x")
-	tk.Agent = "claude"
-	m := newModel(b, &memStore{b: b}, Options{Agents: &fakeRunner{}})
+	x := b.Add("x")
+	x.Runs = []*board.Run{{Agent: "claude", Pod: "p", PodGone: true, Status: board.AgentCompleted, Output: "saved text"}}
+	m := newModel(b, &memStore{b: b}, Options{Agents: newFake()})
+	m.Update(key("o"))
+	if m.mode != modeLogs || !strings.Contains(m.logsView(), "saved text") {
+		t.Fatalf("o should show the saved output: %q", m.logsView())
+	}
+}
+
+func TestAttach(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
 	if _, cmd := m.Update(key("t")); cmd != nil || !strings.Contains(m.err, "no agent pod") {
 		t.Fatalf("attach without pod: err=%q", m.err)
 	}
-	tk.AgentPod, tk.AgentStatus = "pod-x", board.AgentWaiting
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
 	if _, cmd := m.Update(key("t")); cmd != nil || !strings.Contains(m.err, "starting") {
 		t.Fatalf("attach while starting: err=%q", m.err)
 	}
-	tk.AgentStatus = board.AgentCompleted
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentRunning, Ticket: x.ID}
+	poll(m)
 	if _, cmd := m.Update(key("t")); cmd == nil {
 		t.Fatal("attach should hand the terminal to a process")
 	}
@@ -257,11 +451,10 @@ func TestAttach(t *testing.T) {
 }
 
 func TestStopNeedsConfirmation(t *testing.T) {
-	b := board.New("t")
-	tk := b.Add("x")
-	tk.Agent, tk.AgentPod, tk.AgentStatus = "claude", "pod-x", board.AgentRunning
-	fr := &fakeRunner{}
-	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
+	b, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
 	m.width, m.height = 100, 30
 	m.Update(key("x"))
 	v := ansi.Strip(m.View().Content)
@@ -272,14 +465,13 @@ func TestStopNeedsConfirmation(t *testing.T) {
 	if !strings.Contains(lines[len(lines)-1], "y confirm") {
 		t.Fatalf("key bar should stay at the bottom:\n%s", v)
 	}
-	_, cmd := m.Update(key("n"))
+	_, cmd = m.Update(key("n"))
 	run(m, cmd)
-	if len(fr.stopped) != 0 || tk.AgentPod == "" {
+	if len(fr.stopped) != 0 || !x.Current().Live() {
 		t.Fatal("stopped without y")
 	}
-
 	b.Add("no pod")
-	m.Update(key("j"))
+	m.selectTicket(b.Tickets[1])
 	m.Update(key("x"))
 	if m.mode == modeConfirm || !strings.Contains(m.err, "no agent pod") {
 		t.Fatalf("x without pod: mode=%v err=%q", m.mode, m.err)
@@ -287,57 +479,31 @@ func TestStopNeedsConfirmation(t *testing.T) {
 }
 
 func TestAutoAgentShowsChoice(t *testing.T) {
-	b := board.New("t")
-	tk := b.Add("x")
-	tk.Agent = board.AgentAuto
-	fr := &fakeRunner{status: map[string]board.AgentStatus{}}
-	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
-	m.width, m.height = 120, 30
+	_, x, _, m := agentBoard(t)
+	x.Agent = board.AgentAuto
+	m.selectTicket(x)
 	_, cmd := m.Update(key("s"))
 	run(m, cmd)
-	if tk.AgentRun != "codex" || tk.EffectiveAgent() != "codex" {
-		t.Fatalf("agent run: %q", tk.AgentRun)
+	if x.Current().Agent != "codex" || x.EffectiveAgent() != "codex" {
+		t.Fatalf("agent run: %+v", x.Current())
 	}
 	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "auto→codex") {
 		t.Fatalf("card should show the choice:\n%s", v)
 	}
 }
 
-func TestRetryFromBlocked(t *testing.T) {
+func TestDetailsScrollAndBack(t *testing.T) {
 	b := board.New("t")
 	x := b.Add("x")
-	x.Agent = "claude"
-	b.MoveTo(x, board.StatusBlocked)
-	fr := &fakeRunner{status: map[string]board.AgentStatus{}}
-	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
-	m.selectTicket(x)
-	_, cmd := m.Update(key("s"))
-	run(m, cmd)
-	if x.Status != board.StatusInProgress || len(fr.spawned) != 1 {
-		t.Fatalf("retry: status=%s spawned=%v", x.Status, fr.spawned)
-	}
-}
-
-func TestFinishedOutputSavedAndShownInDetails(t *testing.T) {
-	b := board.New("t")
-	x := b.Add("x")
-	b.MoveTo(x, board.StatusInProgress)
-	x.Agent, x.AgentPod, x.AgentStatus = "claude", "pod-x", board.AgentRunning
-	st := &memStore{b: b}
-	m := newModel(b, st, Options{Agents: &fakeRunner{}})
+	x.Runs = []*board.Run{{Agent: "claude", Pod: "p", PodGone: true, Status: board.AgentCompleted, Output: "hello\nworld"}}
+	m := newModel(b, &memStore{b: b}, Options{})
 	m.width, m.height = 100, 30
-
-	run(m, m.applyStatuses(map[string]board.AgentStatus{"pod-x": board.AgentCompleted}))
-	if x.Status != board.StatusReview || x.AgentOutput != "hello\nworld" {
-		t.Fatalf("status=%s output=%q", x.Status, x.AgentOutput)
-	}
-	m.selectTicket(x)
 	m.Update(key("enter"))
 	v := ansi.Strip(m.View().Content)
-	if m.mode != modeDetail || !strings.Contains(v, "Agent output") || !strings.Contains(v, "world") {
+	if m.mode != modeDetail || !strings.Contains(v, "Run #1 · claude") || !strings.Contains(v, "world") {
 		t.Fatalf("details:\n%s", v)
 	}
-	m.Update(key("j")) // scrolling stays in the details
+	m.Update(key("j"))
 	if m.mode != modeDetail {
 		t.Fatal("j left the details")
 	}
