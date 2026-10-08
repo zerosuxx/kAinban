@@ -27,6 +27,10 @@ type Options struct {
 
 const pollInterval = 5 * time.Second
 
+// logsInterval is how often `o` refreshes a live pod's output (a var for the
+// tests).
+var logsInterval = 2 * time.Second
+
 // Run shows the board until the user quits. Every change is saved at once.
 func Run(ctx context.Context, store board.Store, opts Options) error {
 	b, err := store.Load()
@@ -74,6 +78,7 @@ type (
 		pod, text string
 		err       error
 	}
+	logsTickMsg   struct{ seq int } // refresh the open output view
 	attachDoneMsg struct{ err error }
 )
 
@@ -117,6 +122,8 @@ type model struct {
 
 	logsPod    string
 	logsLoaded bool           // first content arrived (then jump to the end)
+	logsFollow bool           // keep the view at the end as output arrives
+	logsSeq    int            // the open view's refresh loop; older ticks stop
 	vp         viewport.Model // modeLogs: scrollable agent output
 
 	width, height int
@@ -212,6 +219,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeLogs || m.mode == modeDetail {
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
+			if m.mode == modeLogs {
+				m.followIfAtBottom()
+			}
 			return m, cmd
 		}
 		return m, nil
@@ -220,9 +230,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		capture := m.applyStatuses(msg.states)
 		next := tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
-		if m.mode == modeLogs && m.logsPod != "" {
-			return m, tea.Batch(next, capture, m.logsCmd(m.logsPod)) // follow the output
-		}
 		return m, tea.Batch(next, capture)
 	case outputMsg:
 		m.applyOutput(msg)
@@ -237,7 +244,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.pod != m.logsPod {
 			return m, nil // output of a view already left
 		}
-		follow := !m.logsLoaded || m.vp.AtBottom()
+		follow := !m.logsLoaded || m.logsFollow
 		if msg.err != nil {
 			m.vp.SetContent(errStyle.Render("logs: " + msg.err.Error()))
 		} else {
@@ -248,6 +255,11 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.GotoBottom()
 		}
 		return m, nil
+	case logsTickMsg:
+		if m.mode != modeLogs || m.logsPod == "" || msg.seq != m.logsSeq {
+			return m, nil // view left or replaced: this loop ends
+		}
+		return m, tea.Batch(m.logsCmd(m.logsPod), m.logsTick())
 	case attachDoneMsg:
 		if msg.err != nil {
 			m.err = "session: " + msg.err.Error()
@@ -275,16 +287,28 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode, m.logsPod = modeBoard, ""
 				return m, nil
 			case "r":
+				if m.logsPod == "" {
+					return m, nil
+				}
 				return m, m.logsCmd(m.logsPod)
+			case "f":
+				m.logsFollow = !m.logsFollow
+				if m.logsFollow {
+					m.vp.GotoBottom()
+				}
+				return m, nil
 			case "g", "home":
 				m.vp.GotoTop()
+				m.logsFollow = false
 				return m, nil
 			case "G", "end":
 				m.vp.GotoBottom()
+				m.logsFollow = true
 				return m, nil
 			}
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg) // j/k, arrows, pgup/pgdn, space/b, u/d
+			m.followIfAtBottom()
 			return m, cmd
 		case modeDetail:
 			switch msg.String() {
@@ -636,7 +660,14 @@ func (m *model) footer() string {
 	case modeHelp:
 		return subtle.Render("any key back")
 	case modeLogs:
-		return subtle.Render(fmt.Sprintf("%3.0f%% · j/k ↑/↓ pgup/pgdn scroll (touch/wheel too) · g/G top/end · r refresh · q back", m.vp.ScrollPercent()*100))
+		follow := "f follow: off"
+		if m.logsFollow {
+			follow = "f follow: on"
+		}
+		if m.logsPod == "" {
+			follow = "saved"
+		}
+		return subtle.Render(fmt.Sprintf("%3.0f%% · %s · j/k ↑/↓ pgup/pgdn scroll (touch/wheel too) · g/G top/end · r refresh · q back", m.vp.ScrollPercent()*100, follow))
 	}
 	return subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · t session · o output · x stop · p prio · d del · enter details · ? help · q quit")
 }
@@ -951,7 +982,8 @@ Agents         s start the ticket's agent in a pod (moves it to In Progress)
                t open the agent's session in its pod (claude --continue, codex resume,
                  ...) to ask for changes, in tmux: ctrl+z returns here and keeps it
                  running, t again re-attaches · T plain shell there (same)
-               o show the agent's output (scroll with j/k, pgup/pgdn, wheel or touch)
+               o show the agent's output, live (refreshes every 2 s, follows the end;
+                 f toggles following, scrolling up pauses it, G resumes)
                x stop the agent (all its pods) · C stop orphaned agent pods
                a finished agent moves its ticket to Review,
                  a failed one to Blocked (space/s there retries in In Progress)
@@ -966,12 +998,17 @@ output stay listed in the details.
 
 func (m *model) logsHeight() int { return max(m.height-8, 5) }
 
-// logsView shows the scrollable agent output; it follows new output while
-// scrolled to the end.
+// logsView shows the scrollable agent output. A live pod's output refreshes
+// every logsInterval; with follow on (the default, f toggles) the view stays
+// at the end. Scrolling up pauses following, scrolling back to the end (or
+// G) resumes it.
 func (m *model) logsView() string {
 	src := "saved output (pod deleted)"
 	if m.logsPod != "" {
-		src = "output of " + m.logsPod
+		src = "output of " + m.logsPod + " · live"
+		if m.logsFollow {
+			src += ", following"
+		}
 	}
 	return subtle.Render(src) + "\n\n" + m.vp.View() + "\n"
 }

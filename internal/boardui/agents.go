@@ -1,6 +1,8 @@
 package boardui
 
 import (
+	"time"
+
 	"context"
 	"fmt"
 	"os/exec"
@@ -429,7 +431,8 @@ func (m *model) openLogs(t *board.Ticket) (tea.Model, tea.Cmd) {
 	}
 	m.vp = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(m.logsHeight()))
 	m.vp.SoftWrap = true // long lines readable on narrow (phone) screens
-	m.mode, m.logsLoaded = modeLogs, false
+	m.mode, m.logsLoaded, m.logsFollow = modeLogs, false, true
+	m.logsSeq++
 	if !r.Live() || m.opts.Agents == nil {
 		m.logsPod = ""
 		out := r.Output
@@ -442,7 +445,19 @@ func (m *model) openLogs(t *board.Ticket) (tea.Model, tea.Cmd) {
 	}
 	m.logsPod = r.Pod
 	m.vp.SetContent(subtle.Render("loading…"))
-	return m, m.logsCmd(r.Pod)
+	return m, tea.Batch(m.logsCmd(r.Pod), m.logsTick())
+}
+
+// logsTick schedules the next refresh of the open output view.
+func (m *model) logsTick() tea.Cmd {
+	seq := m.logsSeq
+	return tea.Tick(logsInterval, func(time.Time) tea.Msg { return logsTickMsg{seq: seq} })
+}
+
+// followIfAtBottom pauses following when the user scrolled up and resumes it
+// when they scrolled back to the end.
+func (m *model) followIfAtBottom() {
+	m.logsFollow = m.vp.AtBottom()
 }
 
 func (m *model) logsCmd(pod string) tea.Cmd {

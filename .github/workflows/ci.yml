@@ -95,7 +95,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Upstream Nix: magic-nix-cache then uploads what the build produced
+      # (the unfree agent CLIs, the Go binary) to the Actions cache through
+      # its post-build hook. With Determinate Nix nothing was uploaded and
+      # the same derivations were rebuilt on every run.
       - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          determinate: false
       - uses: DeterminateSystems/magic-nix-cache-action@v15
 
       - name: Build image
@@ -107,15 +113,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load and push
+      # crane (not docker push) checks which layers ghcr already has and
+      # uploads only the changed ones; the layers are reproducible, so most
+      # are already there. A fresh docker daemon re-uploads all of them.
+      - name: Push
         run: |
-          loaded=$(./stream-image | docker load | sed -n 's/^Loaded image: //p')
-          tag="$IMAGE:build-${GITHUB_SHA::7}-$ARCH"
-          docker tag "$loaded" "$tag"
-          docker push "$tag"
-          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$tag")
+          ./stream-image > image.tar
+          ref=$(nix run --inputs-from . nixpkgs#crane -- push image.tar "$IMAGE:build-${GITHUB_SHA::7}-$ARCH")
+          echo "pushed $ref"
           mkdir -p "$RUNNER_TEMP/digests"
-          touch "$RUNNER_TEMP/digests/${digest#*@sha256:}"
+          touch "$RUNNER_TEMP/digests/${ref#*@sha256:}"
         env:
           ARCH: ${{ matrix.arch }}
 

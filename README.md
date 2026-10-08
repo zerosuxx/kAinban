@@ -123,9 +123,10 @@ the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
 polls the pods every 5 s for the agent state and moves a ticket to Review when
 its agent finishes successfully, to Blocked when it fails; the tail of the
 agent's output (up to 64 KB) is then saved with the ticket and shown, scrollable,
-in the details (`enter`), even after the pod is gone. `o` shows the agent's output, following new
-lines while you are at the end; scroll it with `j/k`, `pgup/pgdn`, `g/G`, the
-mouse wheel or touch swipes (Termux). `x` stops the agent after a y/N confirmation (deletes its pod with its
+in the details (`enter`), even after the pod is gone. `o` shows the agent's output live: it refreshes every 2 s and
+follows the end (`f` toggles following; scrolling up pauses it, `G` resumes);
+scroll it with `j/k`, `pgup/pgdn`, `g/G`, the mouse wheel or touch swipes
+(Termux). `x` stops the agent after a y/N confirmation (deletes its pod with its
 `/work` and session; the output is kept), deleting a ticket stops all its
 agent pods.
 
@@ -220,7 +221,8 @@ copy the `got:` hash).
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `gofmt`, `go vet`,
 `go test -race`, `helm lint` and `helm template` on every push and pull request.
 On `main`, `v*` tags and manual dispatch it builds `ghcr.io/zerosuxx/kainban`
-with Nix (`nix build .#image`, cached by magic-nix-cache) natively for
+with Nix (`nix build .#image`, cached by magic-nix-cache; pushed with
+`crane`, which uploads only the layers ghcr does not have yet) natively for
 `linux/amd64` and `linux/arm64` and merges them into a multi-arch
 manifest tagged `latest` (main), the branch name, `sha-<short>`, and
 `X.Y.Z` / `X.Y` for version tags.

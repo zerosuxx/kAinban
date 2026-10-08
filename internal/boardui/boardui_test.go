@@ -1,6 +1,8 @@
 package boardui
 
 import (
+	"time"
+
 	"context"
 	"fmt"
 	"os"
@@ -162,7 +164,8 @@ func run(m *model, cmd tea.Cmd) {
 			run(m, c)
 		}
 	default:
-		if _, isTick := msg.(pollMsg); isTick {
+		switch msg.(type) {
+		case pollMsg, logsTickMsg: // tickers: tests drive them by hand
 			return
 		}
 		_, next := m.Update(msg)
@@ -408,8 +411,8 @@ func TestLogsScroll(t *testing.T) {
 	}
 	m.Update(key("k"))
 	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	if m.mode != modeLogs || m.vp.AtBottom() {
-		t.Fatal("scrolling up should stay in the logs, off the bottom")
+	if m.mode != modeLogs || m.vp.AtBottom() || m.logsFollow {
+		t.Fatal("scrolling up should stay in the logs, off the bottom, and pause following")
 	}
 	m.Update(key("g"))
 	if !strings.Contains(m.logsView(), "line 000") {
@@ -418,6 +421,31 @@ func TestLogsScroll(t *testing.T) {
 	run(m, m.logsCmd(m.logsPod))
 	if m.vp.AtBottom() {
 		t.Fatal("refresh moved the view while scrolled up")
+	}
+
+	// Follow: G resumes it, new output then keeps the view at the end.
+	m.Update(key("G"))
+	fr.logs += "\nline 200\nline 201"
+	_, cmd = m.Update(logsTickMsg{seq: m.logsSeq})
+	run(m, cmd)
+	if !m.logsFollow || !m.vp.AtBottom() || !strings.Contains(m.logsView(), "line 201") {
+		t.Fatal("the refresh should show new output at the end while following")
+	}
+	// f turns it off: new output does not move the view.
+	m.Update(key("f"))
+	m.Update(key("k"))
+	fr.logs += "\nline 202"
+	_, cmd = m.Update(logsTickMsg{seq: m.logsSeq})
+	run(m, cmd)
+	if m.logsFollow || m.vp.AtBottom() {
+		t.Fatal("with follow off the view should stay")
+	}
+	if !strings.Contains(m.footer(), "follow: off") {
+		t.Fatalf("key bar: %s", m.footer())
+	}
+	// A tick of an older view does nothing.
+	if _, cmd := m.Update(logsTickMsg{seq: m.logsSeq - 1}); cmd != nil {
+		t.Fatal("stale tick should end its loop")
 	}
 	m.Update(key("q"))
 	if m.mode != modeBoard {
@@ -896,3 +924,6 @@ func TestPopupsKeepKeyBarVisible(t *testing.T) {
 	m.Update(key("d"))
 	check("confirm", "cancel")
 }
+
+// The output view's refresh ticker would otherwise block run() for 2 s.
+func init() { logsInterval = time.Millisecond }
