@@ -2,6 +2,7 @@ package boardui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -144,7 +145,7 @@ func TestSpawnFlow(t *testing.T) {
 	_, cmd = m.Update(key("o"))
 	run(m, cmd)
 	if m.mode != modeLogs || !strings.Contains(m.logsView(), "world") {
-		t.Fatalf("logs: mode=%v %q", m.mode, m.logs)
+		t.Fatalf("logs: mode=%v %q", m.mode, m.logsView())
 	}
 	m.Update(key("q")) // back to the board
 
@@ -162,5 +163,61 @@ func TestSpawnWithoutCluster(t *testing.T) {
 	m.Update(key("s"))
 	if !strings.Contains(m.err, "no cluster") {
 		t.Fatalf("err %q", m.err)
+	}
+}
+
+func TestFinishedAgentMovesToReview(t *testing.T) {
+	b := board.New("t")
+	ok, bad := b.Add("ok"), b.Add("bad")
+	for _, x := range []*board.Ticket{ok, bad} {
+		b.Move(x, 1)
+		x.Agent, x.AgentStatus, x.AgentPod = "claude", board.AgentRunning, "pod-"+x.Title
+	}
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.applyStatuses(map[string]board.AgentStatus{"pod-ok": board.AgentCompleted, "pod-bad": board.AgentError})
+	if ok.Status != board.StatusReview || bad.Status != board.StatusInProgress {
+		t.Fatalf("ok=%s bad=%s", ok.Status, bad.Status)
+	}
+}
+
+type longLogsRunner struct{ fakeRunner }
+
+func (longLogsRunner) Logs(context.Context, string, int64) (string, error) {
+	var lines []string
+	for i := range 200 {
+		lines = append(lines, fmt.Sprintf("line %03d", i))
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func TestLogsScroll(t *testing.T) {
+	b := board.New("t")
+	tk := b.Add("x")
+	tk.Agent, tk.AgentPod, tk.AgentStatus = "codex", "pod-x", board.AgentRunning
+	m := newModel(b, &memStore{b: b}, Options{Agents: &longLogsRunner{}})
+	m.width, m.height = 80, 20
+
+	_, cmd := m.Update(key("o"))
+	run(m, cmd)
+	if m.mode != modeLogs || !m.vp.AtBottom() || !strings.Contains(m.logsView(), "line 199") {
+		t.Fatalf("should open at the end: mode=%v view=%q", m.mode, m.logsView())
+	}
+	m.Update(key("k"))
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if m.mode != modeLogs || m.vp.AtBottom() {
+		t.Fatal("scrolling up should stay in the logs, off the bottom")
+	}
+	m.Update(key("g"))
+	if !strings.Contains(m.logsView(), "line 000") {
+		t.Fatal("g should jump to the top")
+	}
+	// A refresh while scrolled up must not yank the view to the end.
+	run(m, m.logsCmd("pod-x"))
+	if m.vp.AtBottom() {
+		t.Fatal("refresh moved the view while scrolled up")
+	}
+	m.Update(key("q"))
+	if m.mode != modeBoard {
+		t.Fatal("q should leave the logs")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -99,8 +100,9 @@ type model struct {
 	notice string
 	err    string
 
-	logs    string // modeLogs content
-	logsPod string
+	logsPod    string
+	logsLoaded bool           // first content arrived (then jump to the end)
+	vp         viewport.Model // modeLogs: scrollable agent output
 
 	width, height int
 }
@@ -159,6 +161,16 @@ func (m *model) applyStatuses(st map[string]board.AgentStatus) {
 			t.AgentStatus = s
 			t.Touch()
 			changed = true
+			// A finished agent hands the ticket over for review.
+			if s == board.AgentCompleted && t.Status == board.StatusInProgress {
+				wasSelected := m.selected() == t
+				if m.b.Move(t, 1) == nil {
+					if wasSelected {
+						m.selectTicket(t) // the cursor follows the card
+					}
+					m.notice = t.Title + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent finished)"
+				}
+			}
 		}
 	}
 	if changed {
@@ -241,12 +253,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.vp.SetWidth(m.width)
+		m.vp.SetHeight(m.logsHeight())
+		return m, nil
+	case tea.MouseWheelMsg:
+		if m.mode == modeLogs {
+			var cmd tea.Cmd
+			m.vp, cmd = m.vp.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 	case pollMsg:
 		return m, m.pollCmd()
 	case statusMsg:
 		m.applyStatuses(msg.statuses)
-		return m, tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
+		next := tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
+		if m.mode == modeLogs {
+			return m, tea.Batch(next, m.logsCmd(m.logsPod)) // follow the output
+		}
+		return m, next
 	case spawnedMsg:
 		t := m.findTicket(msg.ticketID)
 		if t == nil {
@@ -262,12 +287,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.save("started " + msg.pod)
 		return m, nil
 	case logsMsg:
-		if msg.err != nil {
-			m.logs = errStyle.Render("logs: " + msg.err.Error())
-		} else {
-			m.logs = msg.text
+		if msg.pod != m.logsPod {
+			return m, nil // output of a view already left
 		}
-		m.logsPod = msg.pod
+		follow := !m.logsLoaded || m.vp.AtBottom()
+		if msg.err != nil {
+			m.vp.SetContent(errStyle.Render("logs: " + msg.err.Error()))
+		} else {
+			m.vp.SetContent(strings.TrimRight(msg.text, "\n"))
+		}
+		m.logsLoaded = true
+		if follow {
+			m.vp.GotoBottom()
+		}
 		return m, nil
 	case stoppedMsg:
 		if msg.err != nil {
@@ -302,11 +334,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
+			case "q", "esc", "o":
+				m.mode, m.logsPod = modeBoard, ""
+				return m, nil
 			case "r":
 				return m, m.logsCmd(m.logsPod)
+			case "g", "home":
+				m.vp.GotoTop()
+				return m, nil
+			case "G", "end":
+				m.vp.GotoBottom()
+				return m, nil
 			}
-			m.mode = modeBoard
-			return m, nil
+			var cmd tea.Cmd
+			m.vp, cmd = m.vp.Update(msg) // j/k, arrows, pgup/pgdn, space/b, u/d
+			return m, cmd
 		case modeDetail, modeHelp:
 			switch msg.String() {
 			case "ctrl+c":
@@ -386,7 +428,10 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.err = "no agent pod for this ticket (s starts one)"
 				return m, nil
 			}
-			m.mode, m.logs, m.logsPod = modeLogs, "loading…", t.AgentPod
+			m.vp = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(m.logsHeight()))
+			m.vp.SoftWrap = true // long lines readable on narrow (phone) screens
+			m.vp.SetContent(subtle.Render("loading…"))
+			m.mode, m.logsPod, m.logsLoaded = modeLogs, t.AgentPod, false
 			return m, m.logsCmd(t.AgentPod)
 		}
 	case "x":
@@ -524,12 +569,16 @@ func (m *model) View() tea.View {
 	case m.mode == modeHelp:
 		b.WriteString(subtle.Render("any key back"))
 	case m.mode == modeLogs:
-		b.WriteString(subtle.Render("r refresh · any key back"))
+		b.WriteString(subtle.Render(fmt.Sprintf("%3.0f%% · j/k ↑/↓ pgup/pgdn scroll (touch/wheel too) · g/G top/end · r refresh · q back", m.vp.ScrollPercent()*100)))
 	default:
 		b.WriteString(subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · o output · x stop · p prio · d delete · enter details · ? help · q quit"))
 	}
 	v := tea.NewView(b.String())
 	v.AltScreen = true
+	if m.mode == modeLogs {
+		// Wheel events; Termux turns touch swipes into them.
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
@@ -680,22 +729,17 @@ Tickets        n new · e edit title · enter details (e there edits the descrip
                a cycle agent (claude, codex, copilot, antigravity, none)
                p cycle priority (P1 highest … P4) · d delete
 Agents         s start the ticket's agent in a pod (moves it to In Progress)
-               o show the agent's output · x stop the agent
+               o show the agent's output (scroll with j/k, pgup/pgdn, wheel or touch)
+               x stop the agent · a finished agent moves its ticket to Review
 Other          ? this help · q quit
 
 In Progress has a WIP limit of 3; moving a 4th card there is refused.
 `
 
-// logsView shows the tail of the agent output that fits the screen.
+func (m *model) logsHeight() int { return max(m.height-6, 5) }
+
+// logsView shows the scrollable agent output; it follows new output while
+// scrolled to the end.
 func (m *model) logsView() string {
-	lines := strings.Split(strings.TrimRight(m.logs, "\n"), "\n")
-	room := max(m.height-6, 5)
-	if len(lines) > room {
-		lines = lines[len(lines)-room:]
-	}
-	w := max(m.width-1, 20)
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, w, "…")
-	}
-	return subtle.Render("output of "+m.logsPod) + "\n\n" + strings.Join(lines, "\n") + "\n"
+	return subtle.Render("output of "+m.logsPod) + "\n\n" + m.vp.View() + "\n"
 }
