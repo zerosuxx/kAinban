@@ -105,15 +105,19 @@ func writeCodexHome(dir string, authJSON []byte) error {
 	return os.WriteFile(filepath.Join(dir, "auth.json"), authJSON, 0o600)
 }
 
-// ensureAntigravitySettings selects the Gemini API key in agy's settings
-// unless the user already has a settings file.
+// antigravitySettings selects the Gemini API key and preset choices that
+// agy would otherwise ask for on the first run (color scheme).
+const antigravitySettings = `{"modelProvider": "gemini", "colorScheme": "terminal", "showTips": false, "showFeedbackSurvey": false}` + "\n"
+
+// ensureAntigravitySettings writes antigravitySettings unless the user
+// already has a settings file.
 func ensureAntigravitySettings(home string) {
 	f := filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
 	if _, err := os.Stat(f); err == nil {
 		return
 	}
 	if os.MkdirAll(filepath.Dir(f), 0o700) == nil {
-		os.WriteFile(f, []byte("{\"modelProvider\": \"gemini\"}\n"), 0o600)
+		os.WriteFile(f, []byte(antigravitySettings), 0o600)
 	}
 }
 

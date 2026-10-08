@@ -254,7 +254,9 @@ if [ -f /secrets/codex/auth.json ]; then
 fi
 if [ -n "${GEMINI_API_KEY:-}" ]; then
   mkdir -p "$HOME/.gemini/antigravity-cli"
-  printf '{"modelProvider": "gemini"}\n' > "$HOME/.gemini/antigravity-cli/settings.json"
+  # Gemini API key, and no first-run color scheme picker / tips / surveys.
+  printf '{"modelProvider": "gemini", "colorScheme": "terminal", "showTips": false, "showFeedbackSurvey": false}\n' \
+    > "$HOME/.gemini/antigravity-cli/settings.json"
 fi
 if [ -n "${GH_TOKEN:-}" ]; then gh auth setup-git >/dev/null 2>&1 || true; fi
 cd /work
