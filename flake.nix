@@ -21,7 +21,10 @@
 
           kainban = pkgs.buildGoModule {
             pname = "kainban";
-            inherit version;
+            # Fixed: the name is in the vendored modules' store path, so a
+            # per-commit version would refetch them on every build. The real
+            # version goes in through ldflags.
+            version = "0";
             src = pkgs.lib.cleanSource self;
             # Update after go.mod changes: build once, copy the "got:" hash.
             vendorHash = "sha256-wyKTsaehLH4xas39/SdxC0NC/FvAuxcPZH6cNSrCUP0=";

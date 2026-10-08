@@ -256,15 +256,15 @@ func shQuote(s string) string {
 
 // agentCommands is the headless invocation per agent; the prompt is in
 // $KAINBAN_PROMPT. Pods are the sandbox (bubblewrap does not work in them),
-// so the CLIs' own sandboxes and approval prompts are off. claude and codex
-// emit JSON events as they work, which `kainban stream` turns into a live,
+// so the CLIs' own sandboxes and approval prompts are off. claude, codex and
+// agy emit JSON events as they work, which `kainban stream` turns into a live,
 // readable transcript (tool calls, result previews, the answer); pipefail
 // keeps the CLI's exit status.
 var agentCommands = map[board.AgentType]string{
 	"claude":      `set -o pipefail; claude -p "$KAINBAN_PROMPT" --dangerously-skip-permissions --output-format stream-json --verbose ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"} | kainban stream claude`,
 	"codex":       `set -o pipefail; codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"} "$KAINBAN_PROMPT" </dev/null | kainban stream codex`,
 	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
-	"antigravity": agyRetries + `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
+	"antigravity": agyRetries + `set -o pipefail; agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions --output-format stream-json ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"} | kainban stream antigravity`,
 }
 
 // agyRetries copies agy's model retries ("attempt 2 failed (Error 503 ...),

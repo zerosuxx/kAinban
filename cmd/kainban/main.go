@@ -144,7 +144,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return bad("stream needs the agent: kainban stream claude|codex|antigravity")
 		}
 		if err := agent.FormatStream(args[1], os.Stdin, stdout); err != nil {
-			fmt.Fprintf(stderr, "kainban: %v\n", err)
+			if !errors.Is(err, agent.ErrRunFailed) { // the transcript says why
+				fmt.Fprintf(stderr, "kainban: %v\n", err)
+			}
 			return 1
 		}
 		return 0

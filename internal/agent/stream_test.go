@@ -55,11 +55,32 @@ func TestFormatCodexStream(t *testing.T) {
 	}
 }
 
+func TestFormatAgyStream(t *testing.T) {
+	got := formatFile(t, "antigravity", "agy-stream.jsonl")
+	for _, want := range []string{
+		"· gemini-3.8-flash-medium",
+		"→ write_to_file /tmp/tmp.av8tBNQfWA/hello.py",
+		"→ run_command python3 hello.py\n  ← [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]",
+		"→ view_file /tmp/tmp.av8tBNQfWA/hello.py\n  ← 11 lines, 205 bytes",
+		"\n### Output\n\nRunning `python3 hello.py` produced:",
+		"✓ done in 1m10s, 63297 tokens\n  (agy: API error (attempt 2): Error 503",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	var out strings.Builder
+	err := FormatStream("antigravity", strings.NewReader(`{"event":"result","result":{"status":"ERROR","error":"quota","duration_seconds":2}}`), &out)
+	if out.String() != "✗ error after 2s: quota\n" || err != ErrRunFailed {
+		t.Fatalf("failed run: %q %v", out.String(), err)
+	}
+}
+
 func TestFormatStreamPassesOtherLines(t *testing.T) {
 	var out strings.Builder
 	in := "Error: not logged in\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"boom\"}}\n{broken\n"
-	if err := FormatStream("codex", strings.NewReader(in), &out); err != nil {
-		t.Fatal(err)
+	if err := FormatStream("codex", strings.NewReader(in), &out); err != ErrRunFailed {
+		t.Fatalf("turn.failed should fail the run: %v", err)
 	}
 	if out.String() != "Error: not logged in\n✗ boom\n{broken\n" {
 		t.Fatalf("%q", out.String())

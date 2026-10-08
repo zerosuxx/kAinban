@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -11,8 +12,8 @@ import (
 	"time"
 )
 
-// FormatStream turns a CLI's JSON event stream (claude --output-format
-// stream-json, codex exec --json) into a compact transcript for the pod log,
+// FormatStream turns a CLI's JSON event stream (claude and agy
+// --output-format stream-json, codex exec --json) into a compact transcript for the pod log,
 // which is what the board's `o` shows while the agent works: the agent's
 // messages in full, one line per tool call, a short preview of each tool
 // result and a summary at the end. Lines that are not JSON, or events it
@@ -29,20 +30,42 @@ func FormatStream(agent string, in io.Reader, out io.Writer) error {
 		}
 		if line[0] != '{' || !json.Valid(line) {
 			fmt.Fprintf(w, "%s\n", line)
-		} else if agent == "codex" {
-			f.codex(line)
 		} else {
-			f.claude(line)
+			switch agent {
+			case "codex":
+				f.codex(line)
+			case "antigravity":
+				f.agy(line)
+			default:
+				f.claude(line)
+			}
 		}
 		if err := w.Flush(); err != nil { // line by line: the log is live
 			return err
 		}
 	}
-	return sc.Err()
+	f.endText()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if f.failed {
+		return ErrRunFailed
+	}
+	return nil
 }
 
+// ErrRunFailed: the stream's final event reported a failed run, so the
+// pipeline fails even when the CLI itself exits 0.
+var ErrRunFailed = errors.New("the agent run failed")
+
 type streamFormatter struct {
-	w io.Writer
+	w      io.Writer
+	inText bool // agy: streaming a message's text deltas
+	textNL bool // … and the last delta ended a line
+	failed bool // the final event reported a failure
 }
 
 func (f *streamFormatter) printf(format string, a ...any) {
@@ -103,6 +126,7 @@ func (f *streamFormatter) claude(line []byte) {
 		took := (time.Duration(ev.DurationMS) * time.Millisecond).Round(time.Second)
 		if ev.IsError || ev.Subtype != "success" {
 			f.printf("✗ %s after %s, %d turns: %s\n", ev.Subtype, took, ev.NumTurns, preview(ev.Result, 3))
+			f.failed = true
 			return
 		}
 		f.printf("✓ done in %s, %d turns, $%.2f\n", took, ev.NumTurns, ev.CostUSD)
@@ -182,8 +206,84 @@ func (f *streamFormatter) codex(line []byte) {
 		f.printf("✓ done, %d input tokens (%d cached), %d output\n", u.InputTokens, u.CachedTokens, u.OutputTokens)
 	case "turn.failed":
 		f.printf("✗ %s\n", ev.Error.Message)
+		f.failed = true
 	case "error":
 		f.printf("✗ %s\n", ev.Message)
+	}
+}
+
+type agyEvent struct {
+	Event string `json:"event"`
+	Init  struct {
+		Model string `json:"model"`
+	} `json:"init"`
+	Step struct {
+		State    string `json:"state"`
+		Type     string `json:"step_type"`
+		Delta    string `json:"text_delta"`
+		ToolName string `json:"tool_name"`
+		ToolInfo struct {
+			Parameters json.RawMessage `json:"parameters"`
+			Output     string          `json:"output"`
+		} `json:"tool_info"`
+	} `json:"step_update"`
+	Result struct {
+		Status   string  `json:"status"`
+		Response string  `json:"response"`
+		Error    string  `json:"error"`
+		Seconds  float64 `json:"duration_seconds"`
+		Usage    struct {
+			Total int `json:"total_tokens"`
+		} `json:"usage"`
+	} `json:"result"`
+}
+
+func (f *streamFormatter) agy(line []byte) {
+	var ev agyEvent
+	if json.Unmarshal(line, &ev) != nil {
+		return
+	}
+	st := ev.Step
+	if st.Delta == "" {
+		f.endText()
+	}
+	switch {
+	case ev.Event == "init":
+		f.printf("· %s\n", ev.Init.Model)
+	case st.Delta != "": // the answer, streamed as it is written
+		if !f.inText {
+			f.printf("\n")
+			f.inText = true
+		}
+		f.printf("%s", st.Delta)
+		f.textNL = strings.HasSuffix(st.Delta, "\n")
+	case st.Type == "tool" && st.State == "ACTIVE":
+		f.printf("→ %s %s\n", st.ToolName, toolInput(st.ToolInfo.Parameters))
+	case st.Type == "tool" && st.State == "DONE":
+		f.result(st.ToolInfo.Output, false)
+	case ev.Event == "result":
+		r := ev.Result
+		took := time.Duration(r.Seconds * float64(time.Second)).Round(time.Second)
+		if r.Status != "ERROR" || strings.TrimSpace(r.Response) != "" {
+			f.printf("✓ done in %s, %d tokens\n", took, r.Usage.Total)
+			if r.Error != "" { // agy reports retries it recovered from as errors
+				f.printf("  (agy: %s)\n", oneLine(r.Error, 160))
+			}
+			return
+		}
+		f.printf("✗ %s after %s: %s\n", strings.ToLower(r.Status), took, oneLine(r.Error, 300))
+		f.failed = true
+	}
+}
+
+// endText closes a streamed message.
+func (f *streamFormatter) endText() {
+	if f.inText {
+		if !f.textNL {
+			f.printf("\n")
+		}
+		f.printf("\n")
+		f.inText = false
 	}
 }
 
@@ -207,10 +307,10 @@ func toolInput(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &in) != nil {
 		return oneLine(string(raw), 160)
 	}
-	for _, k := range []string{"command", "file_path", "pattern", "path", "url", "query", "prompt", "description"} {
+	for _, k := range []string{"command", "CommandLine", "file_path", "TargetFile", "AbsolutePath", "pattern", "path", "url", "Url", "query", "Query", "prompt", "description"} {
 		if v, ok := in[k].(string); ok && v != "" {
 			s := v
-			if k == "file_path" || k == "path" {
+			if k == "file_path" || k == "path" || k == "TargetFile" || k == "AbsolutePath" {
 				s = workPath(v)
 			}
 			if k == "pattern" {
