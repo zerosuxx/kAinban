@@ -970,3 +970,75 @@ func TestModelPlaceholderFits(t *testing.T) {
 		}
 	}
 }
+
+// clickOn clicks the first place where s is drawn.
+func clickOn(t *testing.T, m *model, s string) {
+	t.Helper()
+	for y, line := range strings.Split(ansi.Strip(m.View().Content), "\n") {
+		if i := strings.Index(line, s); i >= 0 {
+			m.Update(tea.MouseClickMsg{X: ansi.StringWidth(line[:i]), Y: y, Button: tea.MouseLeft})
+			return
+		}
+	}
+	t.Fatalf("%q is not on the screen", s)
+}
+
+func TestMouseBoard(t *testing.T) {
+	b := board.New("t")
+	b.Add("first")
+	second := b.Add("second")
+	done := b.Add("shipped")
+	done.Status = board.StatusDone
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.width, m.height = 140, 30
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatal("the board needs mouse events")
+	}
+
+	clickOn(t, m, "shipped")
+	if m.selected() != done {
+		t.Fatalf("click selected %v", m.selected())
+	}
+	for _, h := range m.cardHits { // the area starts at the card's top border
+		if line := strings.Split(ansi.Strip(m.View().Content), "\n")[h.y]; !strings.Contains(line, "╭") {
+			t.Fatalf("card area starts at %q", line)
+		}
+	}
+	clickOn(t, m, "second")
+	if m.selected() != second || m.mode != modeBoard {
+		t.Fatalf("click selected %v, mode %v", m.selected(), m.mode)
+	}
+	clickOn(t, m, "second") // double click
+	if m.mode != modeDetail {
+		t.Fatalf("double click: mode %v", m.mode)
+	}
+	m.Update(key("q"))
+
+	m.Update(tea.MouseWheelMsg{X: 2, Y: 5, Button: tea.MouseWheelUp})
+	if m.selected().Title != "first" {
+		t.Fatalf("wheel up selected %q", m.selected().Title)
+	}
+}
+
+func TestMouseForm(t *testing.T) {
+	for _, h := range []int{40, 22} { // full and compact popup
+		b := board.New("t")
+		m := newModel(b, &memStore{b: b}, Options{})
+		m.width, m.height = 100, h
+		m.Update(key("n"))
+		clickOn(t, m, "Branch")
+		if m.form.focus != fieldBranch {
+			t.Fatalf("h=%d: focus %s", h, fieldNames[m.form.focus])
+		}
+		typeText(m, "feat/x")
+		clickOn(t, m, "Agent")
+		clickOn(t, m, "Agent") // focused: next agent
+		if m.form.focus != fieldAgent || m.form.agent != board.AgentTypes[1] || m.form.branch.Value() != "feat/x" {
+			t.Fatalf("h=%d: focus %s, agent %q", h, fieldNames[m.form.focus], m.form.agent)
+		}
+		clickOn(t, m, "what the agent should do") // the description's placeholder
+		if m.form.focus != fieldDescription {
+			t.Fatalf("h=%d: focus %s", h, fieldNames[m.form.focus])
+		}
+	}
+}

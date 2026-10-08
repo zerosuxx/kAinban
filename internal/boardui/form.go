@@ -41,6 +41,15 @@ type editForm struct {
 	agent                        board.AgentType
 
 	err string
+
+	spans []fieldSpan // lines of the last render, for clicks
+	boxW  int
+}
+
+// fieldSpan is the lines a field takes in the rendered popup.
+type fieldSpan struct {
+	field     formField
+	from, end int // [from, end)
 }
 
 const formWidth = 72
@@ -148,6 +157,26 @@ func modelPlaceholder(a board.AgentType) string {
 		return "default or e.g. qwen3:4b"
 	}
 	return "empty = agent default"
+}
+
+// click focuses the field at x, y (relative to the popup); a click on the
+// focused priority or agent picks the next value.
+func (f *editForm) click(x, y int) tea.Cmd {
+	if x < 0 || x >= f.boxW {
+		return nil
+	}
+	for _, s := range f.spans {
+		if y < s.from || y >= s.end {
+			continue
+		}
+		if s.field == f.focus {
+			f.cycle(1) // only priority and agent cycle
+			return nil
+		}
+		f.focus = s.field
+		return f.focusCmd()
+	}
+	return nil
 }
 
 // formResult is what a key did to the form.
@@ -274,14 +303,34 @@ func (f *editForm) render(w int, compact bool) string {
 		return label(i) + sep + in.View()
 	}
 	f.desc.SetWidth(inner)
+	top := 2 // border + padding
+	if compact {
+		top = 1
+	}
+	f.spans, f.boxW = f.spans[:0], w
 	var b strings.Builder
+	mark := func(i formField, lines int) {
+		from := top + strings.Count(b.String(), "\n")
+		f.spans = append(f.spans, fieldSpan{i, from, from + lines})
+	}
+	inputLines := 2 // label, then the input
+	if compact {
+		inputLines = 1
+	}
 	b.WriteString(titleStyle.Render(f.heading) + gap)
+	mark(fieldTitle, inputLines)
 	b.WriteString(input(fieldTitle, &f.title) + gap)
+	mark(fieldDescription, 1+f.desc.Height())
 	b.WriteString(label(fieldDescription) + "\n" + f.desc.View() + gap)
+	mark(fieldPriority, 1)
 	b.WriteString(label(fieldPriority) + choice(fieldPriority, priorityStyle(f.priority).Render(fmt.Sprintf("P%d", f.priority))) + "\n")
+	mark(fieldAgent, 1)
 	b.WriteString(label(fieldAgent) + choice(fieldAgent, agentName(f.agent)) + gap)
+	mark(fieldModel, inputLines)
 	b.WriteString(input(fieldModel, &f.model) + gap)
+	mark(fieldLabels, inputLines)
 	b.WriteString(input(fieldLabels, &f.labels) + gap)
+	mark(fieldBranch, inputLines)
 	b.WriteString(input(fieldBranch, &f.branch))
 	if f.err != "" {
 		b.WriteString(gap + errStyle.Render(f.err))

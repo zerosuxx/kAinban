@@ -127,7 +127,29 @@ type model struct {
 	vp         viewport.Model // modeLogs: scrollable agent output
 
 	width, height int
+
+	cardHits  []cardHit // where View drew the cards and columns, for clicks
+	colHits   []cardHit
+	lastClick struct {
+		id string
+		at time.Time
+	}
+	popupX, popupY int // where overlay drew the last popup
 }
+
+// cardHit is a clickable area of the board: a card, or a whole column (row -1).
+type cardHit struct {
+	x, y, w, h int
+	col, row   int
+	id         string
+}
+
+func (h cardHit) contains(x, y int) bool {
+	return x >= h.x && x < h.x+h.w && y >= h.y && y < h.y+h.h
+}
+
+// doubleClick is the longest gap between the clicks of a double click.
+const doubleClick = 500 * time.Millisecond
 
 func newModel(b *board.Board, store board.Store, opts Options) *model {
 	return &model{
@@ -223,6 +245,21 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.followIfAtBottom()
 			}
 			return m, cmd
+		}
+		if m.mode == modeBoard {
+			m.wheelBoard(msg.Mouse())
+		}
+		return m, nil
+	case tea.MouseClickMsg:
+		mouse := msg.Mouse()
+		if mouse.Button != tea.MouseLeft {
+			return m, nil
+		}
+		switch m.mode {
+		case modeBoard:
+			return m.clickBoard(mouse)
+		case modeForm:
+			return m, m.form.click(mouse.X-m.popupX, mouse.Y-m.popupY)
 		}
 		return m, nil
 	case pollMsg:
@@ -557,8 +594,9 @@ func (m *model) View() tea.View {
 	}
 	v := tea.NewView(screen + "\n" + footer)
 	v.AltScreen = true
-	if m.mode == modeLogs || m.mode == modeDetail {
-		// Wheel events; Termux turns touch swipes into them.
+	if m.mode != modeHelp && m.mode != modeConfirm {
+		// Clicks and wheel events; Termux turns taps into clicks and
+		// touch swipes into the wheel.
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
@@ -569,6 +607,7 @@ func (m *model) View() tea.View {
 func (m *model) overlay(screen, box string) string {
 	x := max((m.width-lipgloss.Width(box))/2, 0)
 	y := max((m.areaH-lipgloss.Height(box))/2, 1)
+	m.popupX, m.popupY = x, y
 	if lines := strings.Split(box, "\n"); len(lines) > m.areaH-y {
 		box = strings.Join(lines[:max(m.areaH-y, 1)], "\n")
 	}
@@ -677,8 +716,12 @@ func (m *model) columnsView(height int) string {
 	shown, first, colW := m.columnLayout()
 	visible := max((height-3)/cardLines, 1) // column titles, scroll markers
 
+	m.cardHits, m.colHits = m.cardHits[:0], m.colHits[:0]
+	const top = 2 // the header line and a blank line above the board
 	cols := make([]string, 0, shown)
 	for i := first; i < first+shown; i++ {
+		x := (i - first) * (colW + 1)
+		m.colHits = append(m.colHits, cardHit{x: x, y: top, w: colW, h: height, col: i, row: -1})
 		c := m.b.Columns[i]
 		ts := m.b.Column(c.Status)
 		count := fmt.Sprint(len(ts))
@@ -708,6 +751,7 @@ func (m *model) columnsView(height int) string {
 		}
 		end := min(m.scroll[i]+visible, len(ts))
 		for j := m.scroll[i]; j < end; j++ {
+			m.cardHits = append(m.cardHits, cardHit{x: x, y: top + strings.Count(strings.Join(lines, "\n"), "\n") + 1, w: colW, h: cardLines, col: i, row: j, id: ts[j].ID})
 			lines = append(lines, m.card(ts[j], c, colW, i == m.col && j == sel))
 		}
 		if end < len(ts) {
@@ -730,6 +774,49 @@ func (m *model) columnsView(height int) string {
 		hint += fmt.Sprintf(" %d more ›", rest)
 	}
 	return board + "\n" + subtle.Render(strings.TrimSpace(hint)+"  (h/l)")
+}
+
+// clickBoard selects the clicked card (or column); a second click on the
+// same card soon after opens its details.
+func (m *model) clickBoard(mouse tea.Mouse) (tea.Model, tea.Cmd) {
+	for _, h := range m.cardHits {
+		if !h.contains(mouse.X, mouse.Y) {
+			continue
+		}
+		m.col, m.row[h.col] = h.col, h.row
+		now := time.Now()
+		if m.lastClick.id == h.id && now.Sub(m.lastClick.at) < doubleClick {
+			m.lastClick.id = ""
+			m.mode = modeDetail
+			m.openDetail()
+			return m, nil
+		}
+		m.lastClick.id, m.lastClick.at = h.id, now
+		return m, nil
+	}
+	m.lastClick.id = ""
+	for _, h := range m.colHits {
+		if h.contains(mouse.X, mouse.Y) {
+			m.col = h.col
+		}
+	}
+	return m, nil
+}
+
+// wheelBoard moves the selection in the column under the pointer.
+func (m *model) wheelBoard(mouse tea.Mouse) {
+	for _, h := range m.colHits {
+		if !h.contains(mouse.X, mouse.Y) {
+			continue
+		}
+		m.col = h.col
+		switch mouse.Button {
+		case tea.MouseWheelUp:
+			m.row[h.col] = max(m.row[h.col]-1, 0)
+		case tea.MouseWheelDown:
+			m.row[h.col]++ // selected() clamps it
+		}
+	}
 }
 
 // columnLayout picks the columns that fit (on narrow phone screens only
@@ -973,6 +1060,8 @@ func (m *model) detailText() string {
 }
 
 const helpText = `Navigation     h/l ←/→ columns · j/k ↑/↓ cards · g/G first/last
+Mouse          click selects a card, double click opens it · wheel/swipe walks a column
+               in the edit popup a click focuses a field (again: next priority/agent)
 Move card      space or L next column · H or backspace previous column
 Tickets        n new · e edit (popup with every field, incl. an optional model) · enter details
                a cycle agent (auto, claude, codex, copilot, antigravity, ollama, none);

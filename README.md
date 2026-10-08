@@ -96,7 +96,9 @@ the output.
 branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new and
 `e` edit in a popup with every field (title, description, priority, agent,
 labels, branch; `tab`/`shift+tab` or `↑`/`↓` between fields, `ctrl+s` saves, `esc` cancels), `a` cycle the agent, `p` priority, `d` delete, `enter` details,
-`?` help. The board is saved on every change to
+`?` help. The mouse works too (a tap in Termux): a click selects a card, a
+double click opens it, the wheel walks a column, and in the popup a click
+focuses a field. The board is saved on every change to
 `~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
 `--file` overrides).
 
