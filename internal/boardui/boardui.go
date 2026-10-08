@@ -102,6 +102,7 @@ type model struct {
 	form    *editForm
 
 	notice  string // shown as a toast; see toastBox
+	info    string // neutral toast (e.g. "cancelled")
 	err     string
 	toastID int // the latest message; its timer clears it
 
@@ -160,7 +161,7 @@ func (m *model) save(notice string) {
 		m.err = "save failed: " + err.Error()
 		return
 	}
-	m.err, m.notice = "", notice
+	m.err, m.notice, m.info = "", notice, ""
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -173,14 +174,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if d, ok := msg.(toastDoneMsg); ok {
 		if d.id == m.toastID { // a newer message keeps its own timer
-			m.notice, m.err = "", ""
+			m.notice, m.info, m.err = "", "", ""
 		}
 		return m, nil
 	}
-	before := m.notice + "\x00" + m.err
+	before := m.notice + "\x00" + m.info + "\x00" + m.err
 	model, cmd := m.update(msg)
 	// A new message pops up as a toast and disappears after a while.
-	if after := m.notice + "\x00" + m.err; after != before && (m.notice != "" || m.err != "") {
+	if after := m.notice + "\x00" + m.info + "\x00" + m.err; after != before && (m.notice != "" || m.info != "" || m.err != "") {
 		m.toastID++
 		if m.animate {
 			d, id := toastNotice, m.toastID
@@ -260,7 +261,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = modeBoard
 			t := m.selected()
 			if msg.String() != "y" || t == nil {
-				m.notice = "cancelled"
+				m.notice, m.info = "", "cancelled"
 				return m, nil
 			}
 			return m.confirmed(t)
@@ -441,7 +442,7 @@ func (m *model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.form.update(msg)
 	switch res {
 	case formCancel:
-		m.mode, m.form, m.notice = modeBoard, nil, "cancelled"
+		m.mode, m.form, m.notice, m.info = modeBoard, nil, "", "cancelled"
 	case formSave:
 		f := m.form
 		m.mode, m.form = modeBoard, nil
@@ -450,6 +451,10 @@ func (m *model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			f.apply(t)
 			m.selectTicket(t)
 			m.save("created " + t.Key + " " + t.Title)
+			if t.Agent != "" { // created with an agent: start it right away
+				_, start := m.spawn(t, false)
+				return m, tea.Batch(cmd, start)
+			}
 		} else if t := m.findTicket(f.ticketID); t != nil {
 			f.apply(t)
 			m.save("saved " + t.Key)
@@ -572,8 +577,11 @@ const (
 
 func (m *model) toastBox() string {
 	text, color, icon := m.notice, lipgloss.Color("10"), "✓ "
-	if m.err != "" {
+	switch {
+	case m.err != "":
 		text, color, icon = m.err, lipgloss.Color("9"), "✗ "
+	case m.notice == "" && m.info != "":
+		text, color, icon = m.info, lipgloss.Color("8"), ""
 	}
 	if text == "" {
 		return ""

@@ -679,3 +679,61 @@ func TestToasts(t *testing.T) {
 		t.Fatalf("error toast: %q", m.toastBox())
 	}
 }
+
+func TestCancelledIsNeutral(t *testing.T) {
+	b := board.New("t")
+	b.Add("x")
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.Update(key("d"))
+	m.Update(key("n"))
+	if box := ansi.Strip(m.toastBox()); !strings.Contains(box, "cancelled") || strings.Contains(box, "✓") {
+		t.Fatalf("cancel toast: %q", box)
+	}
+	m.Update(key("e"))
+	m.Update(escKey)
+	if box := ansi.Strip(m.toastBox()); !strings.Contains(box, "cancelled") || strings.Contains(box, "✓") {
+		t.Fatalf("form cancel toast: %q", box)
+	}
+}
+
+func TestNewTicketWithAgentStartsIt(t *testing.T) {
+	b := board.New("t")
+	fr := newFake()
+	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
+	m.Update(key("n"))
+	typeText(m, "Write docs")
+	for range 3 { // title -> description -> priority -> agent
+		m.Update(tab)
+	}
+	m.Update(rightKey) // none -> auto
+	m.Update(rightKey) // -> claude
+	_, cmd := m.Update(ctrlS)
+	run(m, cmd)
+	x := b.Tickets[0]
+	if x.Agent != "claude" || len(fr.spawned) != 1 || x.Status != board.StatusInProgress || x.Current() == nil {
+		t.Fatalf("auto start: %+v spawned=%v", x, fr.spawned)
+	}
+
+	// Editing an existing ticket never starts it.
+	y := b.Add("y")
+	m.selectTicket(y)
+	m.Update(key("e"))
+	for range 3 {
+		m.Update(tab)
+	}
+	m.Update(rightKey)
+	_, cmd = m.Update(ctrlS)
+	run(m, cmd)
+	if len(fr.spawned) != 1 || y.Current() != nil {
+		t.Fatal("editing started an agent")
+	}
+
+	// Without an agent nothing starts.
+	m.Update(key("n"))
+	typeText(m, "plain")
+	_, cmd = m.Update(ctrlS)
+	run(m, cmd)
+	if len(fr.spawned) != 1 {
+		t.Fatal("ticket without agent started")
+	}
+}

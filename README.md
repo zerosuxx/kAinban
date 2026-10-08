@@ -104,7 +104,8 @@ are popups; messages pop up as toasts in the top right corner and disappear
 after a few seconds (errors a bit later), the key bar always stays at the
 bottom, and on narrow screens only the columns that fit are shown.
 
-`s` starts the ticket's agent in its own pod, from the
+`s` starts the ticket's agent in its own pod (a ticket created with an agent
+starts right away), from the
 orchestrator's image, and moves the ticket to In Progress. The pod runs the CLI
 headless with the ticket title and description as the prompt (`claude -p`,
 `codex exec`, `copilot -p`, `agy -p`; their own sandboxes are off, the pod is
