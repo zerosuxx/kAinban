@@ -78,6 +78,20 @@ All Secrets live in the release namespace.
 | `kainban-copilot` | `COPILOT_GITHUB_TOKEN` | GitHub Copilot CLI agents |
 | `kainban-antigravity` | `GEMINI_API_KEY` | Antigravity / Gemini agents |
 
+### Board
+
+`kainban board` (alias `kanban`) is the kanban board: Backlog → In Progress
+(WIP limit 3) → Review → Done, tickets as cards with priority, agent and
+branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new,
+`e` edit, `a` cycle the agent, `p` priority, `d` delete, `enter` details,
+`?` help. The board is saved on every change to
+`~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
+`--file` overrides). Spawning agents from tickets comes next.
+
+```shell
+kubectl -n kainban exec -it deploy/kainban -- kainban board
+```
+
 ### Using the credentials in the orchestrator pod
 
 `kainban shell` starts a shell and `kainban run -- CMD` runs a command with the
