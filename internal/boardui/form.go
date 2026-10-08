@@ -201,7 +201,20 @@ func (f *editForm) apply(t *board.Ticket) {
 	t.Touch()
 }
 
-func (f *editForm) view(width int) string {
+// view renders the popup; when the full layout is taller than maxH (phones)
+// it switches to a compact one: label and value on one line, no blank lines
+// and a lower description box.
+func (f *editForm) view(width, maxH int) string {
+	w := min(formWidth, max(width-2, 32))
+	f.desc.SetHeight(6)
+	if box := f.render(w, false); lipgloss.Height(box) <= maxH {
+		return box
+	}
+	f.desc.SetHeight(min(max(maxH-13, 1), 6))
+	return f.render(w, true)
+}
+
+func (f *editForm) render(w int, compact bool) string {
 	label := func(i formField) string {
 		s := fmt.Sprintf("%-12s", fieldNames[i])
 		if f.focus == i {
@@ -215,20 +228,38 @@ func (f *editForm) view(width int) string {
 		}
 		return v
 	}
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(f.heading) + "\n\n")
-	b.WriteString(label(fieldTitle) + "\n" + f.title.View() + "\n\n")
-	b.WriteString(label(fieldDescription) + "\n" + f.desc.View() + "\n\n")
-	b.WriteString(label(fieldPriority) + choice(fieldPriority, priorityStyle(f.priority).Render(fmt.Sprintf("P%d", f.priority))) + "\n")
-	b.WriteString(label(fieldAgent) + choice(fieldAgent, agentName(f.agent)) + "\n\n")
-	b.WriteString(label(fieldModel) + "\n" + f.model.View() + "\n\n")
-	b.WriteString(label(fieldLabels) + "\n" + f.labels.View() + "\n\n")
-	b.WriteString(label(fieldBranch) + "\n" + f.branch.View())
-	if f.err != "" {
-		b.WriteString("\n\n" + errStyle.Render(f.err))
+	inner := w - 6 // border + padding
+	gap, sep := "\n\n", "\n"
+	if compact {
+		inner = w - 4
+		gap = "\n"
 	}
-	return lipgloss.NewStyle().
+	input := func(i formField, in *textinput.Model) string {
+		if compact { // value next to the label
+			in.SetWidth(max(inner-15, 8))
+			return label(i) + in.View()
+		}
+		in.SetWidth(inner)
+		return label(i) + sep + in.View()
+	}
+	f.desc.SetWidth(inner)
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(f.heading) + gap)
+	b.WriteString(input(fieldTitle, &f.title) + gap)
+	b.WriteString(label(fieldDescription) + "\n" + f.desc.View() + gap)
+	b.WriteString(label(fieldPriority) + choice(fieldPriority, priorityStyle(f.priority).Render(fmt.Sprintf("P%d", f.priority))) + "\n")
+	b.WriteString(label(fieldAgent) + choice(fieldAgent, agentName(f.agent)) + gap)
+	b.WriteString(input(fieldModel, &f.model) + gap)
+	b.WriteString(input(fieldLabels, &f.labels) + gap)
+	b.WriteString(input(fieldBranch, &f.branch))
+	if f.err != "" {
+		b.WriteString(gap + errStyle.Render(f.err))
+	}
+	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("12")).
-		Padding(1, 2).Width(min(formWidth, max(width-2, 32))).
-		Render(b.String())
+		Padding(1, 2).Width(w)
+	if compact {
+		style = style.Padding(0, 1)
+	}
+	return style.Render(b.String())
 }

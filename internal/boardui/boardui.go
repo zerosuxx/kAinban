@@ -96,6 +96,7 @@ type model struct {
 	col    int   // selected column
 	row    []int // selected row per column
 	scroll []int // first visible card per column
+	areaH  int   // screen lines above the key bar (set by View)
 
 	mode    mode
 	confirm confirmKind
@@ -125,7 +126,7 @@ func newModel(b *board.Board, store board.Store, opts Options) *model {
 		ctx: context.Background(),
 		b:   b, store: store, opts: opts,
 		row: make([]int, len(b.Columns)), scroll: make([]int, len(b.Columns)),
-		width: 100, height: 30,
+		width: 100, height: 30, areaH: 28,
 	}
 }
 
@@ -488,11 +489,11 @@ func (m *model) View() tea.View {
 		head += subtle.Render("  " + m.opts.Location)
 	}
 
-	// Messages, questions and inputs go to the top so the key bar at the
-	// bottom always stays visible.
-	// Messages pop up as toasts (top right), so the board keeps every line.
+	// The key bar is drawn last, under everything: popups and toasts only
+	// cover the area above it, so the keys are always visible.
 	footer := lipgloss.NewStyle().Width(max(m.width, 20)).Render(m.footer())
-	bodyH := max(m.height-2-lineCount(footer), 5)
+	m.areaH = max(m.height-lineCount(footer), 7)
+	bodyH := m.areaH - 2
 
 	var body string
 	switch m.mode {
@@ -513,11 +514,10 @@ func (m *model) View() tea.View {
 	if pad := bodyH - lineCount(body); pad > 0 {
 		b.WriteString(strings.Repeat("\n", pad))
 	}
-	b.WriteString("\n" + footer)
-	screen := b.String()
+	screen := strings.TrimRight(b.String(), "\n")
 	switch {
 	case m.mode == modeForm && m.form != nil:
-		screen = m.overlay(screen, m.form.view(m.width))
+		screen = m.overlay(screen, m.form.view(m.width, m.areaH-1))
 	case m.mode == modeConfirm:
 		screen = m.overlay(screen, m.confirmBox())
 	case m.mode == modeDetail:
@@ -530,7 +530,7 @@ func (m *model) View() tea.View {
 			lipgloss.NewLayer(box).X(x).Y(1).Z(2),
 		).Render()
 	}
-	v := tea.NewView(screen)
+	v := tea.NewView(screen + "\n" + footer)
 	v.AltScreen = true
 	if m.mode == modeLogs || m.mode == modeDetail {
 		// Wheel events; Termux turns touch swipes into them.
@@ -540,9 +540,13 @@ func (m *model) View() tea.View {
 }
 
 // overlay draws a popup centered over the screen.
+// The box is centered in the area above the key bar and cut to fit it.
 func (m *model) overlay(screen, box string) string {
 	x := max((m.width-lipgloss.Width(box))/2, 0)
-	y := max((m.height-lipgloss.Height(box))/2, 1)
+	y := max((m.areaH-lipgloss.Height(box))/2, 1)
+	if lines := strings.Split(box, "\n"); len(lines) > m.areaH-y {
+		box = strings.Join(lines[:max(m.areaH-y, 1)], "\n")
+	}
 	return lipgloss.NewCompositor(
 		lipgloss.NewLayer(screen),
 		lipgloss.NewLayer(box).X(x).Y(y).Z(1),
@@ -843,7 +847,7 @@ func orDash(s string) string {
 // detailSize is the inner size of the details popup's viewport.
 func (m *model) detailSize() (w, h int) {
 	boxW := min(100, max(m.width-4, 30))
-	boxH := max(m.height-4, 8)
+	boxH := max(m.areaH-2, 8)
 	return boxW - 6, boxH - 4 // border 2 + padding 4; border 2 + heading 2
 }
 

@@ -840,3 +840,40 @@ func TestFinishedRunOutsideInProgressStillReported(t *testing.T) {
 		t.Fatalf("status=%s notice=%q", x.Status, m.notice)
 	}
 }
+
+func TestPopupsKeepKeyBarVisible(t *testing.T) {
+	b := board.New("t")
+	x := b.Add("Write docs")
+	x.Runs = []*board.Run{{Agent: "codex", Pod: "p", PodGone: true, Status: board.AgentCompleted, Output: strings.Repeat("line\n", 80)}}
+	m := newModel(b, &memStore{b: b}, Options{})
+	m.width, m.height = 60, 24
+	check := func(name, want string) string {
+		t.Helper()
+		v := ansi.Strip(m.View().Content)
+		lines := strings.Split(v, "\n")
+		if len(lines) > m.height {
+			t.Fatalf("%s: %d lines on a %d line screen", name, len(lines), m.height)
+		}
+		tail := strings.Join(lines[len(lines)-2:], " ")
+		if !strings.Contains(tail, want) {
+			t.Fatalf("%s: key bar hidden, last lines %q:\n%s", name, tail, v)
+		}
+		return v
+	}
+	m.Update(key("e"))
+	v := check("form", "esc cancel")
+	for _, f := range []string{"Title", "Model", "Labels", "Branch"} {
+		if !strings.Contains(v, f) {
+			t.Fatalf("compact form misses %s:\n%s", f, v)
+		}
+	}
+	if os.Getenv("BOARD_SNAPSHOT") != "" {
+		os.WriteFile(os.Getenv("BOARD_SNAPSHOT"), []byte(v), 0o644)
+	}
+	m.Update(escKey)
+	m.Update(key("enter"))
+	check("details", "q/esc back")
+	m.Update(key("q"))
+	m.Update(key("d"))
+	check("confirm", "cancel")
+}
