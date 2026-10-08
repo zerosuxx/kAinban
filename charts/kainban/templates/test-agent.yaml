@@ -1,0 +1,119 @@
+{{- if .Values.testAgent.enabled }}
+{{- $fullname := printf "%s-test-agent" (include "kainban.fullname" .) -}}
+{{- $secrets := .Values.testAgent.secrets -}}
+# A throwaway agent pod wired up the way real agents will be: each CLI gets
+# only its own credentials from the Secrets `kainban auth` wrote (all
+# optional, so a skipped provider just leaves that CLI logged out), and it
+# never sees kainban-codex-refresh or the Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kainban.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test-agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  # Own selector: must not overlap with the orchestrator's.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $fullname }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $fullname }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: test-agent
+        role: agent
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "kainban.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          stdin: true
+          tty: true
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              # Codex: CODEX_HOME must be writable; copy the refresh-token-less auth.json in.
+              mkdir -p "$CODEX_HOME"
+              printf 'cli_auth_credentials_store = "file"\n' > "$CODEX_HOME/config.toml"
+              if [ -f /secrets/codex/auth.json ]; then cp /secrets/codex/auth.json "$CODEX_HOME/auth.json"; fi
+              # Antigravity: headless mode uses the Gemini API key.
+              if [ -n "${GEMINI_API_KEY:-}" ]; then
+                mkdir -p "$HOME/.gemini/antigravity-cli"
+                printf '{"modelProvider": "gemini"}\n' > "$HOME/.gemini/antigravity-cli/settings.json"
+              fi
+              # git over HTTPS with GH_TOKEN.
+              if [ -n "${GH_TOKEN:-}" ]; then gh auth setup-git >/dev/null 2>&1 || true; fi
+              exec sleep infinity
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: CODEX_HOME
+              value: /home/ubuntu/.codex
+            {{- if $secrets.claude }}
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: kainban-claude, key: CLAUDE_CODE_OAUTH_TOKEN, optional: true }
+            {{- end }}
+            {{- if $secrets.github }}
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: kainban-github, key: GH_TOKEN, optional: true }
+            {{- end }}
+            {{- if $secrets.copilot }}
+            - name: COPILOT_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: kainban-copilot, key: COPILOT_GITHUB_TOKEN, optional: true }
+            {{- end }}
+            {{- if $secrets.antigravity }}
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: kainban-antigravity, key: GEMINI_API_KEY, optional: true }
+            {{- end }}
+          resources:
+            {{- toYaml .Values.testAgent.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if $secrets.codex }}
+            - name: codex-auth
+              mountPath: /secrets/codex
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $secrets.codex }}
+        - name: codex-auth
+          secret:
+            secretName: kainban-codex
+            optional: true
+            defaultMode: 0440 # group-readable via fsGroup 1000
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
