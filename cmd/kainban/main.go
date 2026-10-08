@@ -25,7 +25,8 @@ var appVersion = "dev"
 const usage = `Usage:
   kainban auth [flags]          interactive credential setup (TUI)
   kainban auth check [flags]    check credentials non-interactively
-  kainban board [--file PATH]   kanban board (alias: kanban)
+  kainban board [flags]         kanban board, s starts a ticket's agent pod
+                                (alias: kanban; --file PATH for the board file)
   kainban shell [flags]         start a shell with the stored credentials
   kainban run [flags] -- CMD    run CMD with the stored credentials
   kainban version               print the version
@@ -106,7 +107,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	case "board", "kanban":
+		var cf commonFlags
 		fs := newFlagSet(args[0])
+		cf.register(fs)
 		file := fs.String("file", "", "board file")
 		if err := fs.Parse(args[1:]); err != nil {
 			return bad("%v", err)
@@ -114,7 +117,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if fs.NArg() > 0 {
 			return bad("unexpected arguments: %v", fs.Args())
 		}
-		return runBoard(ctx, *file, stderr)
+		return runBoard(ctx, cf, *file, stderr)
 	case "shell", "run":
 		var cf commonFlags
 		fs := newFlagSet(args[0])

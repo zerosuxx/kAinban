@@ -65,6 +65,7 @@ type Ticket struct {
 	Labels      []string    `json:"labels,omitempty"`
 	Agent       AgentType   `json:"agent,omitempty"`
 	AgentStatus AgentStatus `json:"agent_status"`
+	AgentPod    string      `json:"agent_pod,omitempty"` // pod running the agent
 	Branch      string      `json:"branch,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
 	UpdatedAt   time.Time   `json:"updated_at"`

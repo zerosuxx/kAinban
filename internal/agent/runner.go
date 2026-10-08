@@ -1,0 +1,255 @@
+// Package agent runs a ticket's coding agent as a Kubernetes pod.
+package agent
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
+	"github.com/zerosuxx/kainban/internal/auth"
+	"github.com/zerosuxx/kainban/internal/board"
+)
+
+const (
+	LabelComponent = "app.kubernetes.io/component"
+	ComponentAgent = "agent"
+	LabelTicket    = "kainban.io/ticket"
+	LabelAgent     = "kainban.io/agent"
+)
+
+// Config describes the agent pods. FromEnv fills it from the variables the
+// Helm chart sets on the orchestrator.
+type Config struct {
+	Namespace    string
+	Image        string
+	NodeSelector map[string]string
+}
+
+// FromEnv reads KAINBAN_AGENT_IMAGE and KAINBAN_AGENT_NODE_SELECTOR (JSON).
+func FromEnv(namespace string) (Config, error) {
+	c := Config{Namespace: namespace, Image: os.Getenv("KAINBAN_AGENT_IMAGE")}
+	if c.Image == "" {
+		return c, fmt.Errorf("KAINBAN_AGENT_IMAGE is not set (run kainban in the orchestrator pod)")
+	}
+	if ns := os.Getenv("KAINBAN_AGENT_NODE_SELECTOR"); ns != "" && ns != "null" {
+		if err := json.Unmarshal([]byte(ns), &c.NodeSelector); err != nil {
+			return c, fmt.Errorf("KAINBAN_AGENT_NODE_SELECTOR: %w", err)
+		}
+	}
+	return c, nil
+}
+
+// Runner starts, watches and stops agent pods.
+type Runner struct {
+	client kubernetes.Interface
+	cfg    Config
+}
+
+func NewRunner(client kubernetes.Interface, cfg Config) *Runner {
+	return &Runner{client: client, cfg: cfg}
+}
+
+// Spawn creates the agent pod for t and returns its name.
+func (r *Runner) Spawn(ctx context.Context, t *board.Ticket) (string, error) {
+	if t.Agent == "" {
+		return "", fmt.Errorf("no agent chosen for this ticket (press a)")
+	}
+	pod, err := r.podFor(t)
+	if err != nil {
+		return "", err
+	}
+	created, err := r.client.CoreV1().Pods(r.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("create pod: %w", err)
+	}
+	return created.Name, nil
+}
+
+// Statuses maps every agent pod's name to the ticket agent status.
+func (r *Runner) Statuses(ctx context.Context) (map[string]board.AgentStatus, error) {
+	pods, err := r.client.CoreV1().Pods(r.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: LabelComponent + "=" + ComponentAgent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]board.AgentStatus{}
+	for _, p := range pods.Items {
+		out[p.Name] = phaseStatus(&p)
+	}
+	return out, nil
+}
+
+func phaseStatus(p *corev1.Pod) board.AgentStatus {
+	switch p.Status.Phase {
+	case corev1.PodSucceeded:
+		return board.AgentCompleted
+	case corev1.PodFailed:
+		return board.AgentError
+	case corev1.PodPending:
+		for _, cs := range p.Status.ContainerStatuses {
+			if w := cs.State.Waiting; w != nil && w.Reason != "ContainerCreating" && w.Reason != "PodInitializing" {
+				return board.AgentError // ImagePullBackOff, CreateContainerConfigError, ...
+			}
+		}
+		return board.AgentWaiting
+	default:
+		return board.AgentRunning
+	}
+}
+
+// Logs returns the last lines of the agent's output.
+func (r *Runner) Logs(ctx context.Context, pod string, tail int64) (string, error) {
+	rc, err := r.client.CoreV1().Pods(r.cfg.Namespace).GetLogs(pod, &corev1.PodLogOptions{TailLines: &tail}).Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	return string(b), err
+}
+
+// Stop deletes the agent pod; a missing pod is not an error.
+func (r *Runner) Stop(ctx context.Context, pod string) error {
+	err := r.client.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, pod, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// agentCommands is the headless invocation per agent; the prompt is in
+// $KAINBAN_PROMPT. Pods are the sandbox (bubblewrap does not work in them),
+// so the CLIs' own sandboxes and approval prompts are off.
+var agentCommands = map[board.AgentType]string{
+	"claude":      `claude -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
+	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$KAINBAN_PROMPT" </dev/null`,
+	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools`,
+	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
+}
+
+// setupScript prepares credentials like the chart's test agent, then runs
+// the agent in /work.
+const setupScript = `set -e
+mkdir -p "$CODEX_HOME" /work
+if [ -f /secrets/codex/auth.json ]; then
+  printf 'cli_auth_credentials_store = "file"\n' > "$CODEX_HOME/config.toml"
+  cp /secrets/codex/auth.json "$CODEX_HOME/auth.json"
+fi
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  mkdir -p "$HOME/.gemini/antigravity-cli"
+  printf '{"modelProvider": "gemini"}\n' > "$HOME/.gemini/antigravity-cli/settings.json"
+fi
+if [ -n "${GH_TOKEN:-}" ]; then gh auth setup-git >/dev/null 2>&1 || true; fi
+cd /work
+echo "kainban: ticket $KAINBAN_TICKET_ID, agent $KAINBAN_AGENT"
+`
+
+// Prompt is what the agent is asked to do for t.
+func Prompt(t *board.Ticket) string {
+	p := "Task: " + t.Title
+	if d := strings.TrimSpace(t.Description); d != "" {
+		p += "\n\n" + d
+	}
+	return p
+}
+
+func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
+	run, ok := agentCommands[t.Agent]
+	if !ok {
+		return nil, fmt.Errorf("unknown agent %q", t.Agent)
+	}
+	env := []corev1.EnvVar{
+		{Name: "HOME", Value: "/home/ubuntu"},
+		{Name: "CODEX_HOME", Value: "/home/ubuntu/.codex"},
+		{Name: "KAINBAN_PROMPT", Value: Prompt(t)},
+		{Name: "KAINBAN_TICKET_ID", Value: t.ID},
+		{Name: "KAINBAN_AGENT", Value: string(t.Agent)},
+		secretEnv("GH_TOKEN", auth.GitHubSecretName, auth.GitHubTokenKey),
+	}
+	var mounts []corev1.VolumeMount
+	volumes := []corev1.Volume{
+		{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
+	mounts = append(mounts,
+		corev1.VolumeMount{Name: "work", MountPath: "/work"},
+		corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
+
+	// Only the credentials of this ticket's agent.
+	switch t.Agent {
+	case "claude":
+		env = append(env, secretEnv("CLAUDE_CODE_OAUTH_TOKEN", auth.ClaudeSecretName, auth.ClaudeTokenKey))
+	case "copilot":
+		env = append(env, secretEnv("COPILOT_GITHUB_TOKEN", auth.CopilotSecretName, auth.CopilotTokenKey))
+	case "antigravity":
+		env = append(env, secretEnv("GEMINI_API_KEY", auth.AntigravitySecretName, auth.AntigravityKeyKey))
+	case "codex":
+		mode := int32(0o440) // group-readable via fsGroup
+		optional := true
+		volumes = append(volumes, corev1.Volume{Name: "codex-auth", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: auth.CodexSecretName, Optional: &optional, DefaultMode: &mode},
+		}})
+		mounts = append(mounts, corev1.VolumeMount{Name: "codex-auth", MountPath: "/secrets/codex", ReadOnly: true})
+	}
+
+	uid, noEscalation, nonRoot := int64(1000), false, true
+	automount := false
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("kainban-agent-%s-%s", t.ID, randSuffix()),
+			Namespace: r.cfg.Namespace,
+			Labels: map[string]string{
+				auth.LabelPartOf: auth.PartOfValue,
+				LabelComponent:   ComponentAgent,
+				LabelTicket:      t.ID,
+				LabelAgent:       string(t.Agent),
+				"role":           "agent",
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy:                corev1.RestartPolicyNever,
+			AutomountServiceAccountToken: &automount,
+			NodeSelector:                 r.cfg.NodeSelector,
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsUser: &uid, RunAsGroup: &uid, FSGroup: &uid, RunAsNonRoot: &nonRoot,
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
+			Containers: []corev1.Container{{
+				Name:    "agent",
+				Image:   r.cfg.Image,
+				Command: []string{"sh", "-c", setupScript + run},
+				Env:     env,
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: &noEscalation,
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
+				VolumeMounts: mounts,
+			}},
+			Volumes: volumes,
+		},
+	}, nil
+}
+
+func secretEnv(name, secret, key string) corev1.EnvVar {
+	optional := true
+	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key, Optional: &optional,
+	}}}
+}
+
+func randSuffix() string {
+	b := make([]byte, 2)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}

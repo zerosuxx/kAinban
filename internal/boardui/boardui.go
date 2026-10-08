@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -15,11 +16,23 @@ import (
 	"github.com/zerosuxx/kainban/internal/board"
 )
 
+// AgentRunner starts and watches agent pods (internal/agent.Runner).
+type AgentRunner interface {
+	Spawn(ctx context.Context, t *board.Ticket) (string, error)
+	Statuses(ctx context.Context) (map[string]board.AgentStatus, error)
+	Logs(ctx context.Context, pod string, tail int64) (string, error)
+	Stop(ctx context.Context, pod string) error
+}
+
 // Options configures Run.
 type Options struct {
 	AppVersion string
-	Location   string // where the board is stored, shown in the header
+	Location   string      // where the board is stored, shown in the header
+	Agents     AgentRunner // nil: agents unavailable (not in the cluster)
+	AgentsErr  string      // why Agents is nil, shown on s
 }
+
+const pollInterval = 5 * time.Second
 
 // Run shows the board until the user quits. Every change is saved at once.
 func Run(ctx context.Context, store board.Store, opts Options) error {
@@ -27,7 +40,9 @@ func Run(ctx context.Context, store board.Store, opts Options) error {
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(newModel(b, store, opts), tea.WithContext(ctx)).Run()
+	m := newModel(b, store, opts)
+	m.ctx = ctx
+	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
 }
 
@@ -39,6 +54,24 @@ const (
 	modeConfirm      // delete?
 	modeDetail
 	modeHelp
+	modeLogs
+)
+
+type (
+	pollMsg    struct{}
+	statusMsg  struct{ statuses map[string]board.AgentStatus }
+	spawnedMsg struct {
+		ticketID, pod string
+		err           error
+	}
+	logsMsg struct {
+		pod, text string
+		err       error
+	}
+	stoppedMsg struct {
+		ticketID string
+		err      error
+	}
 )
 
 type inputKind int
@@ -50,6 +83,7 @@ const (
 )
 
 type model struct {
+	ctx   context.Context
 	b     *board.Board
 	store board.Store
 	opts  Options
@@ -65,18 +99,115 @@ type model struct {
 	notice string
 	err    string
 
+	logs    string // modeLogs content
+	logsPod string
+
 	width, height int
 }
 
 func newModel(b *board.Board, store board.Store, opts Options) *model {
 	return &model{
-		b: b, store: store, opts: opts,
+		ctx: context.Background(),
+		b:   b, store: store, opts: opts,
 		row: make([]int, len(b.Columns)), scroll: make([]int, len(b.Columns)),
 		width: 100, height: 30,
 	}
 }
 
-func (m *model) Init() tea.Cmd { return nil }
+func (m *model) Init() tea.Cmd {
+	if m.opts.Agents == nil {
+		return nil
+	}
+	return m.pollCmd()
+}
+
+func (m *model) pollCmd() tea.Cmd {
+	agents, ctx := m.opts.Agents, m.ctx
+	return func() tea.Msg {
+		st, err := agents.Statuses(ctx)
+		if err != nil {
+			return statusMsg{} // transient; keep the last known state
+		}
+		return statusMsg{st}
+	}
+}
+
+func (m *model) findTicket(id string) *board.Ticket {
+	for _, t := range m.b.Tickets {
+		if t.ID == id {
+			return t
+		}
+	}
+	return nil
+}
+
+// applyStatuses updates the tickets' agent state from their pods.
+func (m *model) applyStatuses(st map[string]board.AgentStatus) {
+	if st == nil {
+		return
+	}
+	changed := false
+	for _, t := range m.b.Tickets {
+		if t.AgentPod == "" {
+			continue
+		}
+		s, ok := st[t.AgentPod]
+		if !ok {
+			s = board.AgentNone // pod gone
+		}
+		if s != t.AgentStatus {
+			t.AgentStatus = s
+			t.Touch()
+			changed = true
+		}
+	}
+	if changed {
+		if err := m.store.Save(m.b); err != nil {
+			m.err = "save failed: " + err.Error()
+		}
+	}
+}
+
+func (m *model) spawn(t *board.Ticket) (tea.Model, tea.Cmd) {
+	switch {
+	case m.opts.Agents == nil:
+		m.err = "agents unavailable: " + m.opts.AgentsErr
+		return m, nil
+	case t.Agent == "":
+		m.err = "pick an agent first (a)"
+		return m, nil
+	case t.AgentStatus == board.AgentRunning || t.AgentStatus == board.AgentWaiting:
+		m.err = "agent already running (x stops it)"
+		return m, nil
+	}
+	if t.Status == board.StatusBacklog {
+		if err := m.b.Move(t, 1); err != nil {
+			m.err = "cannot start: " + err.Error()
+			return m, nil
+		}
+		m.selectTicket(t)
+	}
+	t.AgentStatus = board.AgentWaiting
+	m.save("starting " + string(t.Agent) + " for " + t.Title + "…")
+	agents, ctx, tc := m.opts.Agents, m.ctx, *t
+	return m, func() tea.Msg {
+		pod, err := agents.Spawn(ctx, &tc)
+		return spawnedMsg{ticketID: tc.ID, pod: pod, err: err}
+	}
+}
+
+func (m *model) logsCmd(pod string) tea.Cmd {
+	agents, ctx := m.opts.Agents, m.ctx
+	return func() tea.Msg {
+		text, err := agents.Logs(ctx, pod, 500)
+		return logsMsg{pod: pod, text: text, err: err}
+	}
+}
+
+func (m *model) stopCmd(t *board.Ticket) tea.Cmd {
+	agents, ctx, id, pod := m.opts.Agents, m.ctx, t.ID, t.AgentPod
+	return func() tea.Msg { return stoppedMsg{ticketID: id, err: agents.Stop(ctx, pod)} }
+}
 
 // selected returns the selected ticket, or nil in an empty column.
 func (m *model) selected() *board.Ticket {
@@ -111,6 +242,43 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case pollMsg:
+		return m, m.pollCmd()
+	case statusMsg:
+		m.applyStatuses(msg.statuses)
+		return m, tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
+	case spawnedMsg:
+		t := m.findTicket(msg.ticketID)
+		if t == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			t.AgentStatus = board.AgentError
+			m.save("")
+			m.err = "start failed: " + msg.err.Error()
+			return m, nil
+		}
+		t.AgentPod = msg.pod
+		m.save("started " + msg.pod)
+		return m, nil
+	case logsMsg:
+		if msg.err != nil {
+			m.logs = errStyle.Render("logs: " + msg.err.Error())
+		} else {
+			m.logs = msg.text
+		}
+		m.logsPod = msg.pod
+		return m, nil
+	case stoppedMsg:
+		if msg.err != nil {
+			m.err = "stop failed: " + msg.err.Error()
+			return m, nil
+		}
+		if t := m.findTicket(msg.ticketID); t != nil {
+			t.AgentStatus, t.AgentPod = board.AgentNone, ""
+			m.save("stopped agent of " + t.Title)
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		switch m.mode {
 		case modeInput:
@@ -118,9 +286,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeConfirm:
 			if msg.String() == "y" {
 				if t := m.selected(); t != nil {
+					var cmd tea.Cmd
+					if t.AgentPod != "" && m.opts.Agents != nil {
+						cmd = m.stopCmd(t)
+					}
 					m.b.Delete(t)
 					m.save("deleted " + t.Title)
+					m.mode = modeBoard
+					return m, cmd
 				}
+			}
+			m.mode = modeBoard
+			return m, nil
+		case modeLogs:
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "r":
+				return m, m.logsCmd(m.logsPod)
 			}
 			m.mode = modeBoard
 			return m, nil
@@ -195,7 +378,20 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		if t != nil {
-			m.notice = "spawning agents is the next step; for now pick one with a"
+			return m.spawn(t)
+		}
+	case "o":
+		if t != nil {
+			if t.AgentPod == "" || m.opts.Agents == nil {
+				m.err = "no agent pod for this ticket (s starts one)"
+				return m, nil
+			}
+			m.mode, m.logs, m.logsPod = modeLogs, "loading…", t.AgentPod
+			return m, m.logsCmd(t.AgentPod)
+		}
+	case "x":
+		if t != nil && t.AgentPod != "" && m.opts.Agents != nil {
+			return m, m.stopCmd(t)
 		}
 	case "?":
 		m.mode = modeHelp
@@ -307,6 +503,8 @@ func (m *model) View() tea.View {
 		b.WriteString(m.detailView())
 	case modeHelp:
 		b.WriteString(helpText)
+	case modeLogs:
+		b.WriteString(m.logsView())
 	default:
 		b.WriteString(m.columnsView())
 	}
@@ -325,8 +523,10 @@ func (m *model) View() tea.View {
 		b.WriteString(subtle.Render("e edit description · any key back"))
 	case m.mode == modeHelp:
 		b.WriteString(subtle.Render("any key back"))
+	case m.mode == modeLogs:
+		b.WriteString(subtle.Render("r refresh · any key back"))
 	default:
-		b.WriteString(subtle.Render("h/l j/k move · space/H/L move card · n new · e edit · a agent · p priority · d delete · enter details · ? help · q quit"))
+		b.WriteString(subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · o output · x stop · p prio · d delete · enter details · ? help · q quit"))
 	}
 	v := tea.NewView(b.String())
 	v.AltScreen = true
@@ -457,6 +657,7 @@ func (m *model) detailView() string {
 		{"Priority", fmt.Sprintf("P%d", t.Priority)},
 		{"Agent", agentName(t.Agent) + " (" + string(t.AgentStatus) + ")"},
 		{"Branch", orDash(t.Branch)},
+		{"Pod", orDash(t.AgentPod)},
 		{"ID", t.ID},
 		{"Created", t.CreatedAt.Local().Format("2006-01-02 15:04")},
 		{"Updated", t.UpdatedAt.Local().Format("2006-01-02 15:04")},
@@ -478,8 +679,23 @@ Move card      space or L next column · H or backspace previous column
 Tickets        n new · e edit title · enter details (e there edits the description)
                a cycle agent (claude, codex, copilot, antigravity, none)
                p cycle priority (P1 highest … P4) · d delete
-Agents         s spawn — coming next
+Agents         s start the ticket's agent in a pod (moves it to In Progress)
+               o show the agent's output · x stop the agent
 Other          ? this help · q quit
 
 In Progress has a WIP limit of 3; moving a 4th card there is refused.
 `
+
+// logsView shows the tail of the agent output that fits the screen.
+func (m *model) logsView() string {
+	lines := strings.Split(strings.TrimRight(m.logs, "\n"), "\n")
+	room := max(m.height-6, 5)
+	if len(lines) > room {
+		lines = lines[len(lines)-room:]
+	}
+	w := max(m.width-1, 20)
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, w, "…")
+	}
+	return subtle.Render("output of "+m.logsPod) + "\n\n" + strings.Join(lines, "\n") + "\n"
+}

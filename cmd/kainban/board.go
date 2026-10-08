@@ -8,18 +8,28 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/zerosuxx/kainban/internal/agent"
 	"github.com/zerosuxx/kainban/internal/board"
 	"github.com/zerosuxx/kainban/internal/boardui"
 )
 
 // runBoard shows the kanban board stored in path (default: board.json in the
-// state directory, i.e. on the orchestrator's PVC).
-func runBoard(ctx context.Context, path string, stderr io.Writer) int {
+// state directory, i.e. on the orchestrator's PVC). Agents can be started
+// when the cluster and the agent image (set by the Helm chart) are known.
+func runBoard(ctx context.Context, cf commonFlags, path string, stderr io.Writer) int {
 	if path == "" {
 		home, _ := os.UserHomeDir()
 		path = filepath.Join(stateDir(home), "board.json")
 	}
-	err := boardui.Run(ctx, board.FileStore{Path: path}, boardui.Options{AppVersion: appVersion, Location: path})
+	opts := boardui.Options{AppVersion: appVersion, Location: path}
+	if t, err := cf.connect(); err != nil {
+		opts.AgentsErr = err.Error()
+	} else if cfg, err := agent.FromEnv(t.Namespace); err != nil {
+		opts.AgentsErr = err.Error()
+	} else {
+		opts.Agents = agent.NewRunner(t.Client, cfg)
+	}
+	err := boardui.Run(ctx, board.FileStore{Path: path}, opts)
 	if errors.Is(err, context.Canceled) {
 		return 130
 	}

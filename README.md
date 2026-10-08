@@ -86,7 +86,15 @@ branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new,
 `e` edit, `a` cycle the agent, `p` priority, `d` delete, `enter` details,
 `?` help. The board is saved on every change to
 `~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
-`--file` overrides). Spawning agents from tickets comes next.
+`--file` overrides).
+
+`s` starts the ticket's agent (pick one with `a`) in its own pod, from the
+orchestrator's image, and moves the ticket to In Progress. The pod runs the CLI
+headless with the ticket title and description as the prompt (`claude -p`,
+`codex exec`, `copilot -p`, `agy -p`; their own sandboxes are off, the pod is
+the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
+polls the pods every 5 s for the agent state; `o` shows the agent's output,
+`x` stops it, deleting a ticket stops its agent.
 
 ```shell
 kubectl -n kainban exec -it deploy/kainban -- kainban board
