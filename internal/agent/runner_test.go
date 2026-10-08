@@ -292,7 +292,7 @@ func TestOllamaAgent(t *testing.T) {
 	if cmd := p.Spec.Containers[0].Command[2]; !strings.Contains(cmd, "codex exec --oss --local-provider ollama") || !strings.Contains(cmd, "kainban stream codex") {
 		t.Fatalf("command: %s", cmd)
 	}
-	if got := strings.Join(r.AttachCommand(name, "ollama", false), " "); !strings.Contains(got, "codex resume --last --oss") {
+	if got := strings.Join(r.AttachCommand(name, "ollama", false), " "); !strings.Contains(got, "codex resume --last -c model_provider=ollama") {
 		t.Fatalf("attach: %s", got)
 	}
 	if m := r.ModelFor(&board.Ticket{Agent: "ollama", Model: "qwen3:4b"}); m != "qwen3:4b" {

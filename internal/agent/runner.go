@@ -232,7 +232,9 @@ var resumeCommands = map[board.AgentType]string{
 	"codex":       `codex resume --last --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"}`,
 	"copilot":     `copilot --continue --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 	"antigravity": `agy --continue --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
-	"ollama":      `codex resume --last --oss --local-provider ollama --dangerously-bypass-approvals-and-sandbox -m "$KAINBAN_MODEL"`,
+	// Not --oss: the interactive TUI (0.161) ignores it and asks for an
+	// OpenAI login. The provider set directly works (exec takes either).
+	"ollama": `codex resume --last -c model_provider=ollama --dangerously-bypass-approvals-and-sandbox -m "$KAINBAN_MODEL"`,
 }
 
 // AttachCommand is the `kainban attach` invocation (client-go exec, no
