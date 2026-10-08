@@ -175,14 +175,18 @@ func (m *model) applyStatuses(st map[string]board.AgentStatus) {
 			t.AgentStatus = s
 			t.Touch()
 			changed = true
-			// A finished agent hands the ticket over for review.
-			if s == board.AgentCompleted && t.Status == board.StatusInProgress {
+			// A finished agent hands the ticket over for review, a failed
+			// one blocks it.
+			target := map[board.AgentStatus]board.Status{
+				board.AgentCompleted: board.StatusReview, board.AgentError: board.StatusBlocked,
+			}[s]
+			if target != "" && t.Status == board.StatusInProgress {
 				wasSelected := m.selected() == t
-				if m.b.Move(t, 1) == nil {
+				if m.b.MoveTo(t, target) == nil {
 					if wasSelected {
 						m.selectTicket(t) // the cursor follows the card
 					}
-					m.notice = t.Title + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent finished)"
+					m.notice = t.Title + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent " + string(s) + ")"
 				}
 			}
 		}
@@ -206,8 +210,8 @@ func (m *model) spawn(t *board.Ticket) (tea.Model, tea.Cmd) {
 		m.err = "agent already running (x stops it)"
 		return m, nil
 	}
-	if t.Status == board.StatusBacklog {
-		if err := m.b.Move(t, 1); err != nil {
+	if t.Status == board.StatusBacklog || t.Status == board.StatusBlocked {
+		if err := m.b.MoveTo(t, board.StatusInProgress); err != nil {
 			m.err = "cannot start: " + err.Error()
 			return m, nil
 		}
@@ -866,10 +870,12 @@ Agents         s start the ticket's agent in a pod (moves it to In Progress)
                t open the agent's session in its pod (claude --continue, codex resume,
                  ...) to ask for changes; exit it to return here · T plain shell there
                o show the agent's output (scroll with j/k, pgup/pgdn, wheel or touch)
-               x stop the agent · a finished agent moves its ticket to Review
+               x stop the agent · a finished agent moves its ticket to Review,
+                 a failed one to Blocked (space/s there retries in In Progress)
 Other          ? this help · q quit
 
 In Progress has a WIP limit of 3; moving a 4th card there is refused.
+Blocked is a side column: moving skips it, moving out of it goes to In Progress.
 `
 
 func (m *model) logsHeight() int { return max(m.height-8, 5) }

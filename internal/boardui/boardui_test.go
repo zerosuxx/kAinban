@@ -74,9 +74,9 @@ func TestViewShowsColumnsAndCards(t *testing.T) {
 	x.Agent, x.AgentStatus = "claude", board.AgentRunning
 	b.Move(x, 2)
 	m := newModel(b, &memStore{b: b}, Options{AppVersion: "1.2.3"})
-	m.width, m.height = 120, 30
+	m.width, m.height = 150, 30
 	v := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Backlog", "In Progress", "Review", "Done", "Write the orchestrator", "Review PR #12", "1.2.3"} {
+	for _, want := range []string{"Backlog", "In Progress", "Review", "Done", "Blocked", "Write the orchestrator", "Review PR #12", "1.2.3"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view missing %q", want)
 		}
@@ -187,7 +187,7 @@ func TestFinishedAgentMovesToReview(t *testing.T) {
 	}
 	m := newModel(b, &memStore{b: b}, Options{})
 	m.applyStatuses(map[string]board.AgentStatus{"pod-ok": board.AgentCompleted, "pod-bad": board.AgentError})
-	if ok.Status != board.StatusReview || bad.Status != board.StatusInProgress {
+	if ok.Status != board.StatusReview || bad.Status != board.StatusBlocked {
 		t.Fatalf("ok=%s bad=%s", ok.Status, bad.Status)
 	}
 }
@@ -300,5 +300,20 @@ func TestAutoAgentShowsChoice(t *testing.T) {
 	}
 	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "auto→codex") {
 		t.Fatalf("card should show the choice:\n%s", v)
+	}
+}
+
+func TestRetryFromBlocked(t *testing.T) {
+	b := board.New("t")
+	x := b.Add("x")
+	x.Agent = "claude"
+	b.MoveTo(x, board.StatusBlocked)
+	fr := &fakeRunner{status: map[string]board.AgentStatus{}}
+	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	if x.Status != board.StatusInProgress || len(fr.spawned) != 1 {
+		t.Fatalf("retry: status=%s spawned=%v", x.Status, fr.spawned)
 	}
 }

@@ -1,6 +1,7 @@
 package board
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -53,7 +54,7 @@ func TestCyclesAndDelete(t *testing.T) {
 func TestFileStoreRoundTrip(t *testing.T) {
 	s := FileStore{Path: filepath.Join(t.TempDir(), "sub", "board.json")}
 	b, err := s.Load()
-	if err != nil || len(b.Columns) != 4 || len(b.Tickets) != 0 {
+	if err != nil || len(b.Columns) != 5 || len(b.Tickets) != 0 {
 		t.Fatalf("missing file should give a new board: %+v %v", b, err)
 	}
 	b.Add("persist me").Agent = "codex"
@@ -63,5 +64,36 @@ func TestFileStoreRoundTrip(t *testing.T) {
 	got, err := s.Load()
 	if err != nil || len(got.Tickets) != 1 || got.Tickets[0].Title != "persist me" || got.Tickets[0].Agent != "codex" {
 		t.Fatalf("reloaded: %+v %v", got, err)
+	}
+}
+
+func TestBlockedIsASideColumn(t *testing.T) {
+	b := New("t")
+	x := b.Add("x")
+	for _, want := range []Status{StatusInProgress, StatusReview, StatusDone, StatusDone} {
+		if err := b.Move(x, 1); err != nil || x.Status != want {
+			t.Fatalf("moving right: %s, want %s (%v)", x.Status, want, err)
+		}
+	}
+	if err := b.MoveTo(x, StatusBlocked); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []int{1, -1} {
+		x.Status = StatusBlocked
+		if err := b.Move(x, d); err != nil || x.Status != StatusInProgress {
+			t.Fatalf("out of Blocked (%+d): %s %v", d, x.Status, err)
+		}
+	}
+}
+
+func TestOldBoardGetsBlockedColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	old := `{"name":"old","columns":[{"status":"backlog","name":"Backlog"},{"status":"in_progress","name":"In Progress","limit":3},{"status":"review","name":"Review"},{"status":"done","name":"Done"}],"tickets":[]}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := FileStore{Path: path}.Load()
+	if err != nil || b.ColumnIndex(StatusBlocked) != 4 || !b.Columns[4].Side {
+		t.Fatalf("columns %+v %v", b.Columns, err)
 	}
 }

@@ -81,7 +81,8 @@ All Secrets live in the release namespace.
 ### Board
 
 `kainban board` (alias `kanban`) is the kanban board: Backlog → In Progress
-(WIP limit 3) → Review → Done, tickets as cards with priority, agent and
+(WIP limit 3) → Review → Done, plus a Blocked side column for failed agents
+(moving skips it; moving out of it, or `s` to retry, goes back to In Progress), tickets as cards with priority, agent and
 branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new,
 `e` edit, `a` cycle the agent, `p` priority, `d` delete, `enter` details,
 `?` help. The board is saved on every change to
@@ -100,7 +101,7 @@ headless with the ticket title and description as the prompt (`claude -p`,
 `codex exec`, `copilot -p`, `agy -p`; their own sandboxes are off, the pod is
 the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
 polls the pods every 5 s for the agent state and moves a ticket to Review when
-its agent finishes successfully. `o` shows the agent's output, following new
+its agent finishes successfully, to Blocked when it fails. `o` shows the agent's output, following new
 lines while you are at the end; scroll it with `j/k`, `pgup/pgdn`, `g/G`, the
 mouse wheel or touch swipes (Termux). `x` stops the agent after a y/N confirmation (deletes its pod with its
 `/work` and session), deleting a ticket stops its agent.

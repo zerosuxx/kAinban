@@ -32,9 +32,7 @@ func (s FileStore) Load() (*Board, error) {
 	if err := json.Unmarshal(data, b); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", s.Path, err)
 	}
-	if len(b.Columns) == 0 {
-		b.Columns = DefaultColumns()
-	}
+	b.EnsureDefaultColumns()
 	return b, nil
 }
 
