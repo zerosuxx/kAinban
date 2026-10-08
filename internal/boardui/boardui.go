@@ -20,7 +20,7 @@ import (
 
 // AgentRunner starts and watches agent pods (internal/agent.Runner).
 type AgentRunner interface {
-	Spawn(ctx context.Context, t *board.Ticket) (string, error)
+	Spawn(ctx context.Context, t *board.Ticket) (pod string, agent board.AgentType, err error)
 	Statuses(ctx context.Context) (map[string]board.AgentStatus, error)
 	Logs(ctx context.Context, pod string, tail int64) (string, error)
 	Stop(ctx context.Context, pod string) error
@@ -56,7 +56,7 @@ type mode int
 const (
 	modeBoard   mode = iota
 	modeInput        // new ticket / edit title / edit description
-	modeConfirm      // delete?
+	modeConfirm      // y/N question, see confirmKind
 	modeDetail
 	modeHelp
 	modeLogs
@@ -67,6 +67,7 @@ type (
 	statusMsg  struct{ statuses map[string]board.AgentStatus }
 	spawnedMsg struct {
 		ticketID, pod string
+		agent         board.AgentType
 		err           error
 	}
 	logsMsg struct {
@@ -78,6 +79,13 @@ type (
 		err      error
 	}
 	attachDoneMsg struct{ err error }
+)
+
+type confirmKind int
+
+const (
+	confirmDelete confirmKind = iota
+	confirmStop
 )
 
 type inputKind int
@@ -99,6 +107,7 @@ type model struct {
 	scroll []int // first visible card per column
 
 	mode      mode
+	confirm   confirmKind
 	inputKind inputKind
 	input     textinput.Model
 
@@ -204,12 +213,12 @@ func (m *model) spawn(t *board.Ticket) (tea.Model, tea.Cmd) {
 		}
 		m.selectTicket(t)
 	}
-	t.AgentStatus = board.AgentWaiting
+	t.AgentStatus, t.AgentRun = board.AgentWaiting, ""
 	m.save("starting " + string(t.Agent) + " for " + t.Title + "…")
 	agents, ctx, tc := m.opts.Agents, m.ctx, *t
 	return m, func() tea.Msg {
-		pod, err := agents.Spawn(ctx, &tc)
-		return spawnedMsg{ticketID: tc.ID, pod: pod, err: err}
+		pod, agent, err := agents.Spawn(ctx, &tc)
+		return spawnedMsg{ticketID: tc.ID, pod: pod, agent: agent, err: err}
 	}
 }
 
@@ -226,7 +235,7 @@ func (m *model) attach(t *board.Ticket, shell bool) (tea.Model, tea.Cmd) {
 		m.err = "the agent pod is still starting"
 		return m, nil
 	}
-	argv := m.opts.Agents.AttachCommand(t.AgentPod, t.Agent, shell)
+	argv := m.opts.Agents.AttachCommand(t.AgentPod, t.EffectiveAgent(), shell)
 	return m, tea.ExecProcess(exec.Command(argv[0], argv[1:]...), func(err error) tea.Msg {
 		return attachDoneMsg{err}
 	})
@@ -307,8 +316,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = "start failed: " + msg.err.Error()
 			return m, nil
 		}
-		t.AgentPod = msg.pod
-		m.save("started " + msg.pod)
+		t.AgentPod, t.AgentRun = msg.pod, msg.agent
+		m.save("started " + string(msg.agent) + " in " + msg.pod)
 		return m, nil
 	case logsMsg:
 		if msg.pod != m.logsPod {
@@ -347,20 +356,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeInput:
 			return m.updateInput(msg)
 		case modeConfirm:
-			if msg.String() == "y" {
-				if t := m.selected(); t != nil {
-					var cmd tea.Cmd
-					if t.AgentPod != "" && m.opts.Agents != nil {
-						cmd = m.stopCmd(t)
-					}
-					m.b.Delete(t)
-					m.save("deleted " + t.Title)
-					m.mode = modeBoard
-					return m, cmd
-				}
-			}
 			m.mode = modeBoard
-			return m, nil
+			t := m.selected()
+			if msg.String() != "y" || t == nil {
+				m.notice = "cancelled"
+				return m, nil
+			}
+			switch m.confirm {
+			case confirmStop:
+				return m, m.stopCmd(t)
+			default: // confirmDelete
+				var cmd tea.Cmd
+				if t.AgentPod != "" && m.opts.Agents != nil {
+					cmd = m.stopCmd(t)
+				}
+				m.b.Delete(t)
+				m.save("deleted " + t.Title)
+				return m, cmd
+			}
 		case modeLogs:
 			switch msg.String() {
 			case "ctrl+c":
@@ -443,7 +456,7 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d", "delete":
 		if t != nil {
-			m.mode = modeConfirm
+			m.mode, m.confirm = modeConfirm, confirmDelete
 		}
 	case "enter":
 		if t != nil {
@@ -466,8 +479,12 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.logsCmd(t.AgentPod)
 		}
 	case "x":
-		if t != nil && t.AgentPod != "" && m.opts.Agents != nil {
-			return m, m.stopCmd(t)
+		switch {
+		case t == nil:
+		case t.AgentPod == "" || m.opts.Agents == nil:
+			m.err = "no agent pod for this ticket"
+		default:
+			m.mode, m.confirm = modeConfirm, confirmStop
 		}
 	case "t", "T":
 		if t != nil {
@@ -560,14 +577,13 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	dimBorder   = lipgloss.Color("240")
 	agentColors = map[board.AgentType]string{
-		"claude": "#fab387", "codex": "#94e2d5", "copilot": "#89dceb", "antigravity": "#f5c2e7",
+		"auto": "#b4befe", "claude": "#fab387", "codex": "#94e2d5", "copilot": "#89dceb", "antigravity": "#f5c2e7",
 	}
 )
 
 const cardLines = 5 // border (2) + title + meta + branch
 
 func (m *model) View() tea.View {
-	var b strings.Builder
 	head := titleStyle.Render("kAinban")
 	if m.opts.AppVersion != "" {
 		head += " " + subtle.Render(m.opts.AppVersion)
@@ -576,38 +592,37 @@ func (m *model) View() tea.View {
 	if m.opts.Location != "" {
 		head += subtle.Render("  " + m.opts.Location)
 	}
-	b.WriteString(head + "\n\n")
 
+	// Messages, questions and inputs go to the top so the key bar at the
+	// bottom always stays visible.
+	status, footer := m.statusLine(), m.footer()
+	wrap := lipgloss.NewStyle().Width(max(m.width, 20))
+	if status != "" {
+		status = wrap.Render(status)
+	}
+	footer = wrap.Render(footer)
+	bodyH := max(m.height-3-lineCount(status)-lineCount(footer), 5)
+
+	var body string
 	switch m.mode {
 	case modeDetail:
-		b.WriteString(m.detailView())
+		body = m.detailView()
 	case modeHelp:
-		b.WriteString(helpText)
+		body = helpText
 	case modeLogs:
-		b.WriteString(m.logsView())
+		m.vp.SetHeight(max(bodyH-2, 3))
+		body = m.logsView()
 	default:
-		b.WriteString(m.columnsView())
+		body = m.columnsView(bodyH)
 	}
 
-	b.WriteString("\n")
-	switch {
-	case m.mode == modeInput:
-		b.WriteString(m.input.View() + "\n" + subtle.Render("enter save · esc cancel"))
-	case m.mode == modeConfirm:
-		b.WriteString(errStyle.Render(fmt.Sprintf("delete %q? y/N", m.selected().Title)))
-	case m.err != "":
-		b.WriteString(errStyle.Render(m.err))
-	case m.notice != "":
-		b.WriteString(okStyle.Render(m.notice))
-	case m.mode == modeDetail:
-		b.WriteString(subtle.Render("e edit description · any key back"))
-	case m.mode == modeHelp:
-		b.WriteString(subtle.Render("any key back"))
-	case m.mode == modeLogs:
-		b.WriteString(subtle.Render(fmt.Sprintf("%3.0f%% · j/k ↑/↓ pgup/pgdn scroll (touch/wheel too) · g/G top/end · r refresh · q back", m.vp.ScrollPercent()*100)))
-	default:
-		b.WriteString(subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · t session · o output · x stop · p prio · d del · enter details · ? help · q quit"))
+	var b strings.Builder
+	b.WriteString(head + "\n" + status + "\n\n")
+	b.WriteString(body)
+	if pad := bodyH - lineCount(body); pad > 0 {
+		b.WriteString(strings.Repeat("\n", pad))
 	}
+	b.WriteString("\n" + footer)
 	v := tea.NewView(b.String())
 	v.AltScreen = true
 	if m.mode == modeLogs {
@@ -617,13 +632,74 @@ func (m *model) View() tea.View {
 	return v
 }
 
-func (m *model) columnsView() string {
-	n := len(m.b.Columns)
-	colW := max((m.width-(n-1))/n, 18)
-	visible := max((m.height-8)/cardLines, 1) // header, column titles, footer
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(strings.TrimRight(s, "\n"), "\n") + 1
+}
 
-	cols := make([]string, n)
-	for i, c := range m.b.Columns {
+// statusLine is the line under the header: an input, a question, or the
+// last message.
+func (m *model) statusLine() string {
+	switch {
+	case m.mode == modeInput:
+		return m.input.View()
+	case m.mode == modeConfirm:
+		return errStyle.Render(m.confirmQuestion())
+	case m.err != "":
+		return errStyle.Render(m.err)
+	case m.notice != "":
+		return okStyle.Render(m.notice)
+	}
+	return ""
+}
+
+func (m *model) confirmQuestion() string {
+	t := m.selected()
+	if t == nil {
+		return ""
+	}
+	if m.confirm == confirmStop {
+		return fmt.Sprintf("stop the agent of %q? Its pod, /work and session are deleted. y/N", t.Title)
+	}
+	q := fmt.Sprintf("delete %q?", t.Title)
+	if t.AgentPod != "" {
+		q += " Its agent pod is stopped too."
+	}
+	return q + " y/N"
+}
+
+// footer is the key bar for the current mode.
+func (m *model) footer() string {
+	switch m.mode {
+	case modeInput:
+		return subtle.Render("enter save · esc cancel")
+	case modeConfirm:
+		return subtle.Render("y confirm · any other key cancel")
+	case modeDetail:
+		return subtle.Render("e edit description · any key back")
+	case modeHelp:
+		return subtle.Render("any key back")
+	case modeLogs:
+		return subtle.Render(fmt.Sprintf("%3.0f%% · j/k ↑/↓ pgup/pgdn scroll (touch/wheel too) · g/G top/end · r refresh · q back", m.vp.ScrollPercent()*100))
+	}
+	return subtle.Render("h/l j/k move · space/H/L move · n new · e edit · a agent · s start · t session · o output · x stop · p prio · d del · enter details · ? help · q quit")
+}
+
+func (m *model) columnsView(height int) string {
+	n := len(m.b.Columns)
+	// On narrow (phone) screens show only the columns that fit, around the
+	// selected one.
+	const minColW = 18
+	shown := min(max((m.width+1)/(minColW+1), 1), n)
+	first := min(max(m.col-shown/2, 0), n-shown)
+	colW := max((m.width-(shown-1))/shown, minColW)
+	visible := max((height-3)/cardLines, 1) // column titles, scroll markers
+
+	cols := make([]string, 0, shown)
+	for i := first; i < first+shown; i++ {
+		c := m.b.Columns[i]
 		ts := m.b.Column(c.Status)
 		count := fmt.Sprint(len(ts))
 		if c.Limit > 0 {
@@ -660,9 +736,20 @@ func (m *model) columnsView() string {
 		if len(ts) == 0 {
 			lines = append(lines, subtle.Render("  (empty)"))
 		}
-		cols[i] = lipgloss.NewStyle().Width(colW).Render(strings.Join(lines, "\n"))
+		cols = append(cols, lipgloss.NewStyle().Width(colW).Render(strings.Join(lines, "\n")))
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, joinWithGap(cols)...)
+	board := lipgloss.JoinHorizontal(lipgloss.Top, joinWithGap(cols)...)
+	if shown == n {
+		return board
+	}
+	hint := ""
+	if first > 0 {
+		hint += fmt.Sprintf("‹ %d more ", first)
+	}
+	if rest := n - first - shown; rest > 0 {
+		hint += fmt.Sprintf(" %d more ›", rest)
+	}
+	return board + "\n" + subtle.Render(strings.TrimSpace(hint)+"  (h/l)")
 }
 
 func joinWithGap(cols []string) []string {
@@ -696,7 +783,11 @@ func agentBadge(t *board.Ticket) string {
 	if t.Agent == "" {
 		return subtle.Render("no agent")
 	}
-	s := lipgloss.NewStyle().Foreground(lipgloss.Color(agentColors[t.Agent])).Render(string(t.Agent))
+	name := string(t.Agent)
+	if t.Agent == board.AgentAuto && t.AgentRun != "" {
+		name = "auto→" + string(t.AgentRun)
+	}
+	s := lipgloss.NewStyle().Foreground(lipgloss.Color(agentColors[t.EffectiveAgent()])).Render(name)
 	switch t.AgentStatus {
 	case board.AgentRunning:
 		s += " " + okStyle.Render("●")
@@ -722,6 +813,13 @@ func agentName(a board.AgentType) string {
 	return string(a)
 }
 
+func agentRunSuffix(t *board.Ticket) string {
+	if t.Agent == board.AgentAuto && t.AgentRun != "" {
+		return " → " + string(t.AgentRun)
+	}
+	return ""
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "—"
@@ -739,7 +837,7 @@ func (m *model) detailView() string {
 		{"Title", t.Title},
 		{"Status", col.Name},
 		{"Priority", fmt.Sprintf("P%d", t.Priority)},
-		{"Agent", agentName(t.Agent) + " (" + string(t.AgentStatus) + ")"},
+		{"Agent", agentName(t.Agent) + agentRunSuffix(t) + " (" + string(t.AgentStatus) + ")"},
 		{"Branch", orDash(t.Branch)},
 		{"Pod", orDash(t.AgentPod)},
 		{"ID", t.ID},
@@ -761,7 +859,8 @@ func (m *model) detailView() string {
 const helpText = `Navigation     h/l ←/→ columns · j/k ↑/↓ cards · g/G first/last
 Move card      space or L next column · H or backspace previous column
 Tickets        n new · e edit title · enter details (e there edits the description)
-               a cycle agent (claude, codex, copilot, antigravity, none)
+               a cycle agent (auto, claude, codex, copilot, antigravity, none);
+                 auto lets the orchestrator pick when the agent starts
                p cycle priority (P1 highest … P4) · d delete
 Agents         s start the ticket's agent in a pod (moves it to In Progress)
                t open the agent's session in its pod (claude --continue, codex resume,
@@ -773,7 +872,7 @@ Other          ? this help · q quit
 In Progress has a WIP limit of 3; moving a 4th card there is refused.
 `
 
-func (m *model) logsHeight() int { return max(m.height-6, 5) }
+func (m *model) logsHeight() int { return max(m.height-8, 5) }
 
 // logsView shows the scrollable agent output; it follows new output while
 // scrolled to the end.

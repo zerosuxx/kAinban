@@ -35,9 +35,12 @@ func TestSpawnOnlyMountsTheTicketsAgentCredentials(t *testing.T) {
 	all := []string{"CLAUDE_CODE_OAUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GEMINI_API_KEY"}
 	for ag, want := range cases {
 		tk := &board.Ticket{ID: "t1", Title: "Do it", Description: "details", Agent: ag}
-		name, err := r.Spawn(ctx, tk)
+		name, got, err := r.Spawn(ctx, tk)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if got != ag {
+			t.Errorf("spawned %q, want %q", got, ag)
 		}
 		p, err := cs.CoreV1().Pods("kb").Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -81,7 +84,7 @@ func TestSpawnOnlyMountsTheTicketsAgentCredentials(t *testing.T) {
 			t.Errorf("%s: command %q", ag, c.Command[2])
 		}
 	}
-	if _, err := r.Spawn(ctx, &board.Ticket{ID: "x"}); err == nil {
+	if _, _, err := r.Spawn(ctx, &board.Ticket{ID: "x"}); err == nil {
 		t.Error("spawn without agent should fail")
 	}
 }
@@ -163,5 +166,29 @@ func TestAttachCommand(t *testing.T) {
 	}
 	if got := strings.Join(r.AttachCommand("p1", "claude", true), " "); !strings.Contains(got, "bash -l") {
 		t.Fatalf("shell: %s", got)
+	}
+}
+
+func TestAutoPicksFirstAgentWithCredentials(t *testing.T) {
+	ctx := context.Background()
+	secret := func(name string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kb"}}
+	}
+	auto := &board.Ticket{ID: "a", Title: "x", Agent: board.AgentAuto}
+
+	r := NewRunner(fake.NewSimpleClientset(), Config{Namespace: "kb", Image: "i"})
+	if _, _, err := r.Spawn(ctx, auto); err == nil || !strings.Contains(err.Error(), "no agent has credentials") {
+		t.Fatalf("no credentials: %v", err)
+	}
+
+	cs := fake.NewSimpleClientset(secret(auth.CopilotSecretName), secret(auth.CodexSecretName))
+	r = NewRunner(cs, Config{Namespace: "kb", Image: "i"})
+	name, ag, err := r.Spawn(ctx, auto)
+	if err != nil || ag != "codex" {
+		t.Fatalf("auto picked %q: %v", ag, err)
+	}
+	p, _ := cs.CoreV1().Pods("kb").Get(ctx, name, metav1.GetOptions{})
+	if p.Labels[LabelAgent] != "codex" || !strings.Contains(p.Spec.Containers[0].Command[2], "codex exec") {
+		t.Fatalf("pod not for codex: %v", p.Labels)
 	}
 }

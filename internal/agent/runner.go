@@ -60,20 +60,58 @@ func NewRunner(client kubernetes.Interface, cfg Config) *Runner {
 	return &Runner{client: client, cfg: cfg}
 }
 
-// Spawn creates the agent pod for t and returns its name.
-func (r *Runner) Spawn(ctx context.Context, t *board.Ticket) (string, error) {
+// Spawn creates the agent pod for t and returns its name and the agent it
+// runs (auto resolved to a concrete one).
+func (r *Runner) Spawn(ctx context.Context, t *board.Ticket) (string, board.AgentType, error) {
 	if t.Agent == "" {
-		return "", fmt.Errorf("no agent chosen for this ticket (press a)")
+		return "", "", fmt.Errorf("no agent chosen for this ticket (press a)")
 	}
-	pod, err := r.podFor(t)
+	ag := t.Agent
+	if ag == board.AgentAuto {
+		var err error
+		if ag, err = r.chooseAgent(ctx, t); err != nil {
+			return "", "", err
+		}
+	}
+	tc := *t
+	tc.Agent = ag
+	pod, err := r.podFor(&tc)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	created, err := r.client.CoreV1().Pods(r.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return "", fmt.Errorf("create pod: %w", err)
+		return "", "", fmt.Errorf("create pod: %w", err)
 	}
-	return created.Name, nil
+	return created.Name, ag, nil
+}
+
+// autoPreference is the order auto tries agents in, with the Secret each
+// one needs.
+//
+// TODO: replace with agent profiles (task type, cost, rate limits, current
+// load) once they exist; for now the first agent with credentials wins.
+var autoPreference = []struct {
+	agent  board.AgentType
+	secret string
+}{
+	{"claude", auth.ClaudeSecretName},
+	{"codex", auth.CodexSecretName},
+	{"copilot", auth.CopilotSecretName},
+	{"antigravity", auth.AntigravitySecretName},
+}
+
+func (r *Runner) chooseAgent(ctx context.Context, _ *board.Ticket) (board.AgentType, error) {
+	for _, p := range autoPreference {
+		_, err := r.client.CoreV1().Secrets(r.cfg.Namespace).Get(ctx, p.secret, metav1.GetOptions{})
+		if err == nil {
+			return p.agent, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("auto: check %s: %w", p.secret, err)
+		}
+	}
+	return "", fmt.Errorf("auto: no agent has credentials yet (run kainban auth)")
 }
 
 // Statuses maps every agent pod's name to the ticket agent status.

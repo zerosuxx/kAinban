@@ -52,7 +52,7 @@ func TestCreateMoveDelete(t *testing.T) {
 		t.Fatalf("move: status=%s col=%d", st.b.Tickets[0].Status, m.col)
 	}
 	m.Update(key("a"))
-	if st.b.Tickets[0].Agent != "claude" {
+	if st.b.Tickets[0].Agent != board.AgentAuto { // first in the cycle
 		t.Fatalf("agent: %q", st.b.Tickets[0].Agent)
 	}
 	m.Update(key("d"))
@@ -92,9 +92,13 @@ type fakeRunner struct {
 	status  map[string]board.AgentStatus
 }
 
-func (f *fakeRunner) Spawn(_ context.Context, t *board.Ticket) (string, error) {
+func (f *fakeRunner) Spawn(_ context.Context, t *board.Ticket) (string, board.AgentType, error) {
 	f.spawned = append(f.spawned, t.ID)
-	return "pod-" + t.ID, nil
+	ag := t.Agent
+	if ag == board.AgentAuto {
+		ag = "codex"
+	}
+	return "pod-" + t.ID, ag, nil
 }
 func (f *fakeRunner) Statuses(context.Context) (map[string]board.AgentStatus, error) {
 	return f.status, nil
@@ -128,7 +132,8 @@ func TestSpawnFlow(t *testing.T) {
 	if cmd != nil || m.err == "" || len(fr.spawned) != 0 {
 		t.Fatal("spawn without agent should be refused")
 	}
-	m.Update(key("a")) // claude
+	m.Update(key("a"))
+	m.Update(key("a")) // auto -> claude
 	_, cmd = m.Update(key("s"))
 	run(m, cmd)
 	if len(fr.spawned) != 1 || tk.AgentPod != "pod-"+tk.ID || tk.Status != board.StatusInProgress || tk.AgentStatus != board.AgentWaiting {
@@ -153,6 +158,10 @@ func TestSpawnFlow(t *testing.T) {
 	m.Update(key("q")) // back to the board
 
 	_, cmd = m.Update(key("x"))
+	if cmd != nil || m.mode != modeConfirm {
+		t.Fatal("x should ask first")
+	}
+	_, cmd = m.Update(key("y"))
 	run(m, cmd)
 	if len(fr.stopped) != 1 || tk.AgentPod != "" || tk.AgentStatus != board.AgentNone {
 		t.Fatalf("stop: %+v stopped=%v", tk, fr.stopped)
@@ -244,5 +253,52 @@ func TestAttach(t *testing.T) {
 	m.Update(attachDoneMsg{})
 	if m.notice == "" {
 		t.Fatal("no notice after returning")
+	}
+}
+
+func TestStopNeedsConfirmation(t *testing.T) {
+	b := board.New("t")
+	tk := b.Add("x")
+	tk.Agent, tk.AgentPod, tk.AgentStatus = "claude", "pod-x", board.AgentRunning
+	fr := &fakeRunner{}
+	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
+	m.width, m.height = 100, 30
+	m.Update(key("x"))
+	v := ansi.Strip(m.View().Content)
+	lines := strings.Split(v, "\n")
+	if !strings.Contains(lines[1], "stop the agent") {
+		t.Fatalf("question should be on the line under the header:\n%s", v)
+	}
+	if !strings.Contains(lines[len(lines)-1], "y confirm") {
+		t.Fatalf("key bar should stay at the bottom:\n%s", v)
+	}
+	_, cmd := m.Update(key("n"))
+	run(m, cmd)
+	if len(fr.stopped) != 0 || tk.AgentPod == "" {
+		t.Fatal("stopped without y")
+	}
+
+	b.Add("no pod")
+	m.Update(key("j"))
+	m.Update(key("x"))
+	if m.mode == modeConfirm || !strings.Contains(m.err, "no agent pod") {
+		t.Fatalf("x without pod: mode=%v err=%q", m.mode, m.err)
+	}
+}
+
+func TestAutoAgentShowsChoice(t *testing.T) {
+	b := board.New("t")
+	tk := b.Add("x")
+	tk.Agent = board.AgentAuto
+	fr := &fakeRunner{status: map[string]board.AgentStatus{}}
+	m := newModel(b, &memStore{b: b}, Options{Agents: fr})
+	m.width, m.height = 120, 30
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	if tk.AgentRun != "codex" || tk.EffectiveAgent() != "codex" {
+		t.Fatalf("agent run: %q", tk.AgentRun)
+	}
+	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "auto→codex") {
+		t.Fatalf("card should show the choice:\n%s", v)
 	}
 }

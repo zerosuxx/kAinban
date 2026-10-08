@@ -88,7 +88,13 @@ branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new,
 `~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
 `--file` overrides).
 
-`s` starts the ticket's agent (pick one with `a`) in its own pod, from the
+`a` cycles the agent: `auto` (the orchestrator picks when the agent starts;
+for now the first of claude, codex, copilot, antigravity with credentials,
+later agent profiles; the card then shows e.g. `auto→claude`), or a fixed one.
+Questions and messages appear under the header, the key bar always stays at
+the bottom, and on narrow screens only the columns that fit are shown.
+
+`s` starts the ticket's agent in its own pod, from the
 orchestrator's image, and moves the ticket to In Progress. The pod runs the CLI
 headless with the ticket title and description as the prompt (`claude -p`,
 `codex exec`, `copilot -p`, `agy -p`; their own sandboxes are off, the pod is
@@ -96,8 +102,8 @@ the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
 polls the pods every 5 s for the agent state and moves a ticket to Review when
 its agent finishes successfully. `o` shows the agent's output, following new
 lines while you are at the end; scroll it with `j/k`, `pgup/pgdn`, `g/G`, the
-mouse wheel or touch swipes (Termux). `x` stops the agent (deletes its pod), deleting a ticket
-stops its agent.
+mouse wheel or touch swipes (Termux). `x` stops the agent after a y/N confirmation (deletes its pod with its
+`/work` and session), deleting a ticket stops its agent.
 
 `t` opens the agent's session in its pod to ask for changes: the pod keeps a
 `shell` container (sharing `/work` and the CLIs' session dirs with the headless

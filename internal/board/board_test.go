@@ -30,7 +30,7 @@ func TestMoveRespectsWIPLimit(t *testing.T) {
 func TestCyclesAndDelete(t *testing.T) {
 	b := New("t")
 	x := b.Add("x")
-	for _, want := range []AgentType{"claude", "codex", "copilot", "antigravity", ""} {
+	for _, want := range []AgentType{AgentAuto, "claude", "codex", "copilot", "antigravity", ""} {
 		x.CycleAgent()
 		if x.Agent != want {
 			t.Fatalf("agent %q, want %q", x.Agent, want)

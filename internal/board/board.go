@@ -41,8 +41,11 @@ func DefaultColumns() []Column {
 // AgentType is the CLI a ticket's agent runs ("" = none chosen).
 type AgentType string
 
+// AgentAuto lets the orchestrator pick the agent when it starts one.
+const AgentAuto AgentType = "auto"
+
 // AgentTypes lists the selectable agents in cycling order ("" = none).
-var AgentTypes = []AgentType{"", "claude", "codex", "copilot", "antigravity"}
+var AgentTypes = []AgentType{"", AgentAuto, "claude", "codex", "copilot", "antigravity"}
 
 // AgentStatus is the state of a ticket's agent.
 type AgentStatus string
@@ -66,6 +69,7 @@ type Ticket struct {
 	Agent       AgentType   `json:"agent,omitempty"`
 	AgentStatus AgentStatus `json:"agent_status"`
 	AgentPod    string      `json:"agent_pod,omitempty"` // pod running the agent
+	AgentRun    AgentType   `json:"agent_run,omitempty"` // agent actually started (resolves auto)
 	Branch      string      `json:"branch,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
 	UpdatedAt   time.Time   `json:"updated_at"`
@@ -143,6 +147,14 @@ func (t *Ticket) CycleAgent() {
 	i := slices.Index(AgentTypes, t.Agent)
 	t.Agent = AgentTypes[(i+1)%len(AgentTypes)]
 	t.UpdatedAt = now().UTC()
+}
+
+// EffectiveAgent is the agent that runs (or would run) for the ticket.
+func (t *Ticket) EffectiveAgent() AgentType {
+	if t.AgentRun != "" {
+		return t.AgentRun
+	}
+	return t.Agent
 }
 
 // CyclePriority switches the ticket to the next priority (1..4).
