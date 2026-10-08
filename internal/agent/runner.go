@@ -233,8 +233,10 @@ func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []
 // $KAINBAN_PROMPT. Pods are the sandbox (bubblewrap does not work in them),
 // so the CLIs' own sandboxes and approval prompts are off.
 var agentCommands = map[board.AgentType]string{
-	"claude":      `claude -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
-	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$KAINBAN_PROMPT" </dev/null`,
+	"claude": `claude -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
+	// codex prints the whole transcript (incl. the answer) to stderr and the
+	// final answer again to stdout; keep only the transcript.
+	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$KAINBAN_PROMPT" </dev/null >/dev/null`,
 	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools`,
 	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
 }
