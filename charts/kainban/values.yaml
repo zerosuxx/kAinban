@@ -97,6 +97,9 @@ ollama:
     - llama3.2:3b
   # How long a model stays loaded after its last request.
   keepAlive: 30m
+  # Models in memory at once; a request for another one unloads the idle
+  # one first. Raise it only if the memory limit fits them all.
+  maxLoadedModels: 1
   resources:
     requests:
       cpu: 500m
