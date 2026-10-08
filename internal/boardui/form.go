@@ -21,12 +21,13 @@ const (
 	fieldDescription
 	fieldPriority
 	fieldAgent
+	fieldModel
 	fieldLabels
 	fieldBranch
 	fieldCount
 )
 
-var fieldNames = [fieldCount]string{"Title", "Description", "Priority", "Agent", "Labels", "Branch"}
+var fieldNames = [fieldCount]string{"Title", "Description", "Priority", "Agent", "Model", "Labels", "Branch"}
 
 // editForm is the popup that edits every field of a ticket (or creates one).
 type editForm struct {
@@ -34,10 +35,10 @@ type editForm struct {
 	heading  string
 	focus    formField
 
-	title, labels, branch textinput.Model
-	desc                  textarea.Model
-	priority              int
-	agent                 board.AgentType
+	title, model, labels, branch textinput.Model
+	desc                         textarea.Model
+	priority                     int
+	agent                        board.AgentType
 
 	err string
 }
@@ -72,6 +73,7 @@ func newEditForm(t *board.Ticket, width int, focus formField) *editForm {
 		return get(t)
 	}
 	f.title = newTextInput(value(func(t *board.Ticket) string { return t.Title }), "what needs to be done", w)
+	f.model = newTextInput(value(func(t *board.Ticket) string { return t.Model }), "optional, e.g. claude-opus-5-5 (empty = the agent's default)", w)
 	f.labels = newTextInput(value(func(t *board.Ticket) string { return strings.Join(t.Labels, ", ") }), "comma separated", w)
 	f.branch = newTextInput(value(func(t *board.Ticket) string { return t.Branch }), "optional", w)
 
@@ -90,6 +92,7 @@ func newEditForm(t *board.Ticket, width int, focus formField) *editForm {
 // focusCmd focuses the current field and blurs the others.
 func (f *editForm) focusCmd() tea.Cmd {
 	f.title.Blur()
+	f.model.Blur()
 	f.labels.Blur()
 	f.branch.Blur()
 	f.desc.Blur()
@@ -98,6 +101,8 @@ func (f *editForm) focusCmd() tea.Cmd {
 		return f.title.Focus()
 	case fieldDescription:
 		return f.desc.Focus()
+	case fieldModel:
+		return f.model.Focus()
 	case fieldLabels:
 		return f.labels.Focus()
 	case fieldBranch:
@@ -169,6 +174,8 @@ func (f *editForm) update(msg tea.Msg) (formResult, tea.Cmd) {
 		f.title, cmd = f.title.Update(msg)
 	case fieldDescription:
 		f.desc, cmd = f.desc.Update(msg)
+	case fieldModel:
+		f.model, cmd = f.model.Update(msg)
 	case fieldLabels:
 		f.labels, cmd = f.labels.Update(msg)
 	case fieldBranch:
@@ -183,6 +190,7 @@ func (f *editForm) apply(t *board.Ticket) {
 	t.Description = strings.TrimSpace(f.desc.Value())
 	t.Priority = f.priority
 	t.Agent = f.agent
+	t.Model = strings.TrimSpace(f.model.Value())
 	t.Branch = strings.TrimSpace(f.branch.Value())
 	t.Labels = nil
 	for _, l := range strings.Split(f.labels.Value(), ",") {
@@ -213,6 +221,7 @@ func (f *editForm) view(width int) string {
 	b.WriteString(label(fieldDescription) + "\n" + f.desc.View() + "\n\n")
 	b.WriteString(label(fieldPriority) + choice(fieldPriority, priorityStyle(f.priority).Render(fmt.Sprintf("P%d", f.priority))) + "\n")
 	b.WriteString(label(fieldAgent) + choice(fieldAgent, agentName(f.agent)) + "\n\n")
+	b.WriteString(label(fieldModel) + "\n" + f.model.View() + "\n\n")
 	b.WriteString(label(fieldLabels) + "\n" + f.labels.View() + "\n\n")
 	b.WriteString(label(fieldBranch) + "\n" + f.branch.View())
 	if f.err != "" {

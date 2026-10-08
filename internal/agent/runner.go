@@ -215,10 +215,10 @@ const (
 // resumeCommands continue the agent's most recent session interactively in
 // /work (`t` on the board).
 var resumeCommands = map[board.AgentType]string{
-	"claude":      "claude --continue --dangerously-skip-permissions",
-	"codex":       "codex resume --last --dangerously-bypass-approvals-and-sandbox",
-	"copilot":     "copilot --continue --allow-all-tools",
-	"antigravity": `agy --continue --dangerously-skip-permissions ${KAINBAN_AGY_MODEL:+--model "$KAINBAN_AGY_MODEL"}`,
+	"claude":      `claude --continue --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
+	"codex":       `codex resume --last --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"}`,
+	"copilot":     `copilot --continue --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
+	"antigravity": `agy --continue --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 }
 
 // AttachCommand is the kubectl invocation that opens the agent's session
@@ -238,12 +238,12 @@ func (r *Runner) AttachCommand(pod string, agent board.AgentType, shell bool) []
 // $KAINBAN_PROMPT. Pods are the sandbox (bubblewrap does not work in them),
 // so the CLIs' own sandboxes and approval prompts are off.
 var agentCommands = map[board.AgentType]string{
-	"claude": `claude -p "$KAINBAN_PROMPT" --dangerously-skip-permissions`,
+	"claude": `claude -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 	// codex prints the whole transcript (incl. the answer) to stderr and the
 	// final answer again to stdout; keep only the transcript.
-	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$KAINBAN_PROMPT" </dev/null >/dev/null`,
-	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools`,
-	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_AGY_MODEL:+--model "$KAINBAN_AGY_MODEL"}`,
+	"codex":       `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox ${KAINBAN_MODEL:+-m "$KAINBAN_MODEL"} "$KAINBAN_PROMPT" </dev/null >/dev/null`,
+	"copilot":     `copilot -p "$KAINBAN_PROMPT" --allow-all-tools ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
+	"antigravity": `agy -p "$KAINBAN_PROMPT" --dangerously-skip-permissions ${KAINBAN_MODEL:+--model "$KAINBAN_MODEL"}`,
 }
 
 // setupScript prepares credentials like the chart's test agent, then runs
@@ -267,6 +267,18 @@ if [ -n "${GH_TOKEN:-}" ]; then gh auth setup-git >/dev/null 2>&1 || true; fi
 cd /work
 echo "kainban: ticket $KAINBAN_TICKET_KEY ($KAINBAN_TICKET_ID), agent $KAINBAN_AGENT"
 `
+
+// ModelFor is the model t's agent runs with: the ticket's, else the
+// configured default for agy, else "" (the CLI's own default).
+func (r *Runner) ModelFor(t *board.Ticket) string {
+	if t.Model != "" {
+		return t.Model
+	}
+	if t.Agent == "antigravity" {
+		return r.cfg.AgyModel
+	}
+	return ""
+}
 
 // Prompt is what the agent is asked to do for t.
 func Prompt(t *board.Ticket) string {
@@ -294,7 +306,7 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 		{Name: "KAINBAN_TICKET_ID", Value: t.ID},
 		{Name: "KAINBAN_TICKET_KEY", Value: t.Key},
 		{Name: "KAINBAN_AGENT", Value: string(t.Agent)},
-		{Name: "KAINBAN_AGY_MODEL", Value: r.cfg.AgyModel},
+		{Name: "KAINBAN_MODEL", Value: r.ModelFor(t)},
 		secretEnv("GH_TOKEN", auth.GitHubSecretName, auth.GitHubTokenKey),
 	}
 	var mounts []corev1.VolumeMount

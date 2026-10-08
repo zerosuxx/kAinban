@@ -210,7 +210,7 @@ func TestStopTicketDeletesAllItsPods(t *testing.T) {
 	}
 }
 
-func TestAgyModel(t *testing.T) {
+func TestModels(t *testing.T) {
 	t.Setenv("KAINBAN_AGENT_IMAGE", "img")
 	t.Setenv("KAINBAN_AGY_MODEL", "gemini-flash")
 	c, err := FromEnv("kb")
@@ -219,13 +219,28 @@ func TestAgyModel(t *testing.T) {
 	}
 	cs := fake.NewSimpleClientset()
 	r := NewRunner(cs, c)
-	name, _, err := r.Spawn(context.Background(), &board.Ticket{ID: "a", Title: "x", Agent: "antigravity"})
-	if err != nil {
-		t.Fatal(err)
+	spawn := func(tk *board.Ticket) (string, string) {
+		t.Helper()
+		name, _, err := r.Spawn(context.Background(), tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := cs.CoreV1().Pods("kb").Get(context.Background(), name, metav1.GetOptions{})
+		return envNames(p.Spec.Containers[0])["KAINBAN_MODEL"].Value, p.Spec.Containers[0].Command[2]
 	}
-	p, _ := cs.CoreV1().Pods("kb").Get(context.Background(), name, metav1.GetOptions{})
-	cmd := p.Spec.Containers[0].Command[2]
-	if envNames(p.Spec.Containers[0])["KAINBAN_AGY_MODEL"].Value != "gemini-flash" || !strings.Contains(cmd, `--model "$KAINBAN_AGY_MODEL"`) {
-		t.Fatalf("model not passed: %s", cmd)
+	if m, cmd := spawn(&board.Ticket{ID: "a", Title: "x", Agent: "antigravity"}); m != "gemini-flash" || !strings.Contains(cmd, `--model "$KAINBAN_MODEL"`) {
+		t.Fatalf("agy default model: %q %s", m, cmd)
+	}
+	if m, _ := spawn(&board.Ticket{ID: "b", Title: "x", Agent: "antigravity", Model: "gemini-3.8-flash-high"}); m != "gemini-3.8-flash-high" {
+		t.Fatalf("ticket model should win: %q", m)
+	}
+	if m, cmd := spawn(&board.Ticket{ID: "c", Title: "x", Agent: "codex", Model: "gpt-5-codex"}); m != "gpt-5-codex" || !strings.Contains(cmd, `-m "$KAINBAN_MODEL"`) {
+		t.Fatalf("codex model: %q %s", m, cmd)
+	}
+	if m, _ := spawn(&board.Ticket{ID: "d", Title: "x", Agent: "claude"}); m != "" {
+		t.Fatalf("no model: %q", m)
+	}
+	if got := strings.Join(r.AttachCommand("p", "codex", false), " "); !strings.Contains(got, `codex resume --last`) || !strings.Contains(got, `-m "$KAINBAN_MODEL"`) {
+		t.Fatalf("resume keeps the model: %s", got)
 	}
 }

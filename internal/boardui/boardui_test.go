@@ -145,6 +145,7 @@ func (f *fakeRunner) StopTicket(_ context.Context, id string) error {
 	}
 	return nil
 }
+func (f *fakeRunner) ModelFor(t *board.Ticket) string { return t.Model }
 func (f *fakeRunner) AttachCommand(pod string, _ board.AgentType, shell bool) []string {
 	return []string{"true", pod, fmt.Sprint(shell)}
 }
@@ -556,7 +557,7 @@ func TestEditPopup(t *testing.T) {
 		t.Fatalf("form: mode=%v", m.mode)
 	}
 	v := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Edit KAI-1", "Title", "Description", "Priority", "Agent", "Labels", "Branch"} {
+	for _, want := range []string{"Edit KAI-1", "Title", "Description", "Priority", "Agent", "Model", "Labels", "Branch"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("popup missing %q:\n%s", want, v)
 		}
@@ -575,13 +576,15 @@ func TestEditPopup(t *testing.T) {
 	m.Update(tab)      // agent
 	m.Update(rightKey) // none -> auto
 	m.Update(rightKey) // -> claude
-	m.Update(tab)      // labels
+	m.Update(tab)      // model
+	typeText(m, "claude-opus-5-5")
+	m.Update(tab) // labels
 	typeText(m, "backend, urgent ,")
 	m.Update(key("enter")) // enter moves on in single-line fields
 	typeText(m, "feature/login")
 	m.Update(ctrlS)
 	if m.mode != modeBoard || x.Title != "New title" || x.Description != "line one\nline two" ||
-		x.Priority != 4 || x.Agent != "claude" || x.Branch != "feature/login" ||
+		x.Priority != 4 || x.Agent != "claude" || x.Model != "claude-opus-5-5" || x.Branch != "feature/login" ||
 		strings.Join(x.Labels, "|") != "backend|urgent" {
 		t.Fatalf("saved: %+v", x)
 	}
@@ -780,5 +783,20 @@ func TestFailedAgentToastIsRedWithKey(t *testing.T) {
 	m.Update(key("p"))
 	if box := ansi.Strip(m.toastBox()); !strings.Contains(box, "KAI-1") {
 		t.Fatalf("notices should name the ticket key: %q", box)
+	}
+}
+
+func TestRunRecordsModel(t *testing.T) {
+	_, x, _, m := agentBoard(t)
+	x.Model = "claude-opus-5-5"
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	if x.Current().Model != "claude-opus-5-5" {
+		t.Fatalf("run model %q", x.Current().Model)
+	}
+	m.Update(key("enter"))
+	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "claude (claude-opus-5-5)") {
+		t.Fatalf("details should show the run's model:\n%s", v)
 	}
 }

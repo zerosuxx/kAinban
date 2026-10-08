@@ -824,6 +824,13 @@ func agentName(a board.AgentType) string {
 	return string(a)
 }
 
+func orDefault(s string) string {
+	if s == "" {
+		return subtle.Render("agent default")
+	}
+	return s
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "—"
@@ -877,6 +884,7 @@ func (m *model) detailText() string {
 		{"Status", col.Name},
 		{"Priority", fmt.Sprintf("P%d", t.Priority)},
 		{"Agent", agentName(t.Agent)},
+		{"Model", orDefault(t.Model)},
 		{"Branch", orDash(t.Branch)},
 		{"ID", t.ID},
 		{"Created", t.CreatedAt.Local().Format("2006-01-02 15:04")},
@@ -895,7 +903,11 @@ func (m *model) detailText() string {
 	// Runs, newest first, each with its saved output.
 	for i := len(t.Runs) - 1; i >= 0; i-- {
 		r := t.Runs[i]
-		head := fmt.Sprintf("Run #%d · %s · %s %s · %s", i+1, r.Agent, statusIcon(r.Status), r.Status,
+		agentModel := string(r.Agent)
+		if r.Model != "" {
+			agentModel += " (" + r.Model + ")"
+		}
+		head := fmt.Sprintf("Run #%d · %s · %s %s · %s", i+1, agentModel, statusIcon(r.Status), r.Status,
 			r.StartedAt.Local().Format("01-02 15:04"))
 		if r.FinishedAt != nil {
 			head += " → " + r.FinishedAt.Local().Format("15:04")
@@ -924,7 +936,7 @@ func (m *model) detailText() string {
 
 const helpText = `Navigation     h/l ←/→ columns · j/k ↑/↓ cards · g/G first/last
 Move card      space or L next column · H or backspace previous column
-Tickets        n new · e edit (popup with every field) · enter details
+Tickets        n new · e edit (popup with every field, incl. an optional model) · enter details
                a cycle agent (auto, claude, codex, copilot, antigravity, none);
                  auto lets the orchestrator pick when the agent starts
                p cycle priority (P1 highest … P4) · d delete

@@ -22,6 +22,8 @@ type AgentRunner interface {
 	Stop(ctx context.Context, pod string) error
 	// StopTicket deletes every agent pod of a ticket, tracked or not.
 	StopTicket(ctx context.Context, ticketID string) error
+	// ModelFor is the model a ticket's (resolved) agent runs with ("" = default).
+	ModelFor(t *board.Ticket) string
 	// AttachCommand returns the argv that opens the agent's session (or a
 	// shell) in its pod, run with the terminal handed over.
 	AttachCommand(pod string, agent board.AgentType, shell bool) []string
@@ -46,6 +48,7 @@ type (
 		run      *board.Run
 		pod      string
 		agent    board.AgentType
+		model    string
 		err      error
 		stopped  []stopResult // previous runs' pods stopped first
 	}
@@ -308,7 +311,8 @@ func (m *model) spawn(t *board.Ticket, force bool) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		stopped := stopPods(ctx, agents, pods, saved)
 		pod, agent, err := agents.Spawn(ctx, &tc)
-		return spawnedMsg{ticketID: tc.ID, run: run, pod: pod, agent: agent, err: err, stopped: stopped}
+		tc.Agent = agent
+		return spawnedMsg{ticketID: tc.ID, run: run, pod: pod, agent: agent, model: agents.ModelFor(&tc), err: err, stopped: stopped}
 	}
 }
 
@@ -325,7 +329,7 @@ func (m *model) applySpawned(msg spawnedMsg) {
 		m.err = "start failed: " + msg.err.Error()
 		return
 	}
-	msg.run.Pod, msg.run.Agent = msg.pod, msg.agent
+	msg.run.Pod, msg.run.Agent, msg.run.Model = msg.pod, msg.agent, msg.model
 	m.save("started " + string(msg.agent) + " in " + msg.pod)
 	if len(failed) > 0 {
 		m.err = "previous pod not stopped: " + strings.Join(failed, "; ")

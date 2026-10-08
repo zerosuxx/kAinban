@@ -77,6 +77,7 @@ func (s AgentStatus) Active() bool { return s == AgentWaiting || s == AgentRunni
 type Run struct {
 	Agent      AgentType   `json:"agent"` // the agent that ran (auto resolved)
 	Requested  AgentType   `json:"requested,omitempty"`
+	Model      string      `json:"model,omitempty"` // model the run used ("" = agent default)
 	Pod        string      `json:"pod,omitempty"`
 	PodGone    bool        `json:"pod_gone,omitempty"` // pod deleted
 	Status     AgentStatus `json:"status"`
@@ -107,6 +108,7 @@ type Ticket struct {
 	Priority    int       `json:"priority"` // 1 (highest) .. 4
 	Labels      []string  `json:"labels,omitempty"`
 	Agent       AgentType `json:"agent,omitempty"` // chosen agent (may be auto)
+	Model       string    `json:"model,omitempty"` // optional model for the agent ("" = its default)
 	Runs        []*Run    `json:"runs,omitempty"`  // oldest first
 	Branch      string    `json:"branch,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`

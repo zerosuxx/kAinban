@@ -78,8 +78,11 @@ All Secrets live in the release namespace.
 | `kainban-copilot` | `COPILOT_GITHUB_TOKEN` | GitHub Copilot CLI agents |
 | `kainban-antigravity` | `GEMINI_API_KEY` | Antigravity / Gemini agents |
 
-The Gemini API free tier has no quota for the Pro models, so agents run `agy`
-with `--model gemini-3.8-flash-medium` (chart value `agents.antigravityModel`;
+A ticket can name a model (edit popup, *Model*; empty = the agent's default):
+it is passed as `--model` (`-m` for codex) to the headless run and to `t`, and
+recorded on each run. The Gemini API free tier has no quota for the Pro
+models, so without a ticket model agents run `agy` with
+`--model gemini-3.8-flash-medium` (chart value `agents.antigravityModel`;
 set it to `""` for agy's default model with a billed key).
 
 ### Board
