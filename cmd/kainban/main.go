@@ -13,13 +13,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zerosuxx/kainban/internal/agent"
 	"github.com/zerosuxx/kainban/internal/auth"
 	"github.com/zerosuxx/kainban/internal/kube"
 	"github.com/zerosuxx/kainban/internal/tui"
 )
 
 // appVersion is set at build time with -ldflags "-X main.appVersion=..."
-// (the Dockerfile passes its APP_VERSION build arg).
+// (flake.nix passes the git short rev).
 var appVersion = "dev"
 
 const usage = `Usage:
@@ -31,6 +32,8 @@ const usage = `Usage:
   kainban attach [flags] --pod P [--container C] -- CMD
                                 run CMD in a pod with this terminal (like
                                 kubectl exec -it; used by the board's t/T)
+  kainban stream AGENT          format a CLI's JSON event stream (stdin) as a
+                                readable transcript (used in agent pods)
   kainban shell [flags]         start a shell with the stored credentials
   kainban run [flags] -- CMD    run CMD with the stored credentials
   kainban version               print the version
@@ -136,6 +139,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return bad("attach needs --pod and a command: kainban attach --pod P [--container C] -- CMD")
 		}
 		return runAttach(ctx, cf, *pod, *container, fs.Args(), stderr)
+	case "stream":
+		if len(args) != 2 {
+			return bad("stream needs the agent: kainban stream claude|codex|antigravity")
+		}
+		if err := agent.FormatStream(args[1], os.Stdin, stdout); err != nil {
+			fmt.Fprintf(stderr, "kainban: %v\n", err)
+			return 1
+		}
+		return 0
 	case "shell", "run":
 		var cf commonFlags
 		fs := newFlagSet(args[0])

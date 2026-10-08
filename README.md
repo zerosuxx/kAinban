@@ -119,7 +119,11 @@ starts right away), from the
 orchestrator's image, and moves the ticket to In Progress. The pod runs the CLI
 headless with the ticket title and description as the prompt (`claude -p`,
 `codex exec`, `copilot -p`, `agy -p`; their own sandboxes are off, the pod is
-the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
+the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. Claude and
+Codex run with JSON event output (`--output-format stream-json`, `--json`),
+which `kainban stream` turns into a live transcript as they work: one line per
+tool call (`→ Bash go test ./...`), a three-line preview of each result, the
+agent's messages and a summary (`✓ done in 4s, 4 turns, $0.03`). The board
 polls the pods every 5 s for the agent state and moves a ticket to Review when
 its agent finishes successfully, to Blocked when it fails; the tail of the
 agent's output (up to 64 KB) is then saved with the ticket and shown, scrollable,
