@@ -191,19 +191,26 @@ go vet ./...
 go build -o kainban ./cmd/kainban
 helm lint charts/kainban
 helm template kainban charts/kainban
-docker build --build-arg APP_VERSION=dev -t kainban:dev .
+nix build .#kainban                     # the binary (+ `k` alias)
+nix build .#image && ./result | docker load   # the image
 ```
 
-The runtime image is based on
-[`ghcr.io/zerosuxx/nix-config`](https://github.com/zerosuxx/nix-config), which
-provides `claude`, `codex`, `gh`, `github-copilot-cli`, `antigravity-cli` and
-`bubblewrap` for user `ubuntu` (uid 1000).
+The image is built from [`flake.nix`](flake.nix) with
+`dockerTools.streamLayeredImage` (no Dockerfile): one layer per package, so an
+update only changes the layers of the packages that changed. It contains
+`kainban` (alias `k`), the agent CLIs (`claude`, `codex`, `copilot`, `agy`)
+from nixpkgs master, `gh`, `git`, `tmux`, the usual shell tools, terminfo, and
+the current Node.js LTS and Python 3, for user `ubuntu` (uid 1000). The
+board's `t`/`T` use `kainban attach` (client-go exec), so there is no kubectl.
+After changing `go.mod`, update `vendorHash` in `flake.nix` (build once and
+copy the `got:` hash).
 
 ## CI and image
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `gofmt`, `go vet`,
 `go test -race`, `helm lint` and `helm template` on every push and pull request.
 On `main`, `v*` tags and manual dispatch it builds `ghcr.io/zerosuxx/kainban`
-natively for `linux/amd64` and `linux/arm64` and merges them into a multi-arch
+with Nix (`nix build .#image`, cached by magic-nix-cache) natively for
+`linux/amd64` and `linux/arm64` and merges them into a multi-arch
 manifest tagged `latest` (main), the branch name, `sha-<short>`, and
 `X.Y.Z` / `X.Y` for version tags.

@@ -63,44 +63,43 @@ jobs:
           helm template kainban charts/kainban --namespace kainban \
             --set persistence.enabled=true > /dev/null
 
-  # Each architecture builds natively on its own runner (no QEMU) and is
-  # pushed by digest only; `merge` stitches them into one manifest list.
+  # Each architecture builds the Nix image (flake.nix) natively on its own
+  # runner and pushes it; `merge` stitches them into one manifest list.
+  # magic-nix-cache keeps the Nix store paths in the GitHub Actions cache, so
+  # unchanged packages are not rebuilt or re-downloaded.
   docker:
     needs: [test, helm]
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     permissions:
       contents: read
       packages: write
+      id-token: write # magic-nix-cache
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux/amd64
+          - arch: amd64
             runner: ubuntu-24.04
-          - platform: linux/arm64
+          - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Prepare
-        run: |
-          {
-            echo "PLATFORM_PAIR=${PLATFORM//\//-}"
-            echo "IMAGE=ghcr.io/${OWNER,,}/kainban"
-            if [ "$GITHUB_REF_TYPE" = tag ]; then
-              echo "APP_VERSION=${GITHUB_REF_NAME#v}"
-            else
-              echo "APP_VERSION=${GITHUB_SHA::7}"
-            fi
-          } >> "$GITHUB_ENV"
+        run: echo "IMAGE=ghcr.io/${OWNER,,}/kainban" >> "$GITHUB_ENV"
         env:
-          PLATFORM: ${{ matrix.platform }}
           OWNER: ${{ github.repository_owner }}
 
+      # Full history: the flake's version is its git short rev.
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
+
+      - name: Build image
+        run: nix build .#image -L --out-link stream-image
 
       - uses: docker/login-action@v4
         with:
@@ -108,33 +107,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE }}
-
-      - id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APP_VERSION=${{ env.APP_VERSION }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
-
-      - name: Export digest
+      - name: Load and push
         run: |
+          loaded=$(./stream-image | docker load | sed -n 's/^Loaded image: //p')
+          tag="$IMAGE:build-${GITHUB_SHA::7}-$ARCH"
+          docker tag "$loaded" "$tag"
+          docker push "$tag"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$tag")
           mkdir -p "$RUNNER_TEMP/digests"
-          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+          touch "$RUNNER_TEMP/digests/${digest#*@sha256:}"
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v7
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
