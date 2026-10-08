@@ -317,3 +317,32 @@ func TestRetryFromBlocked(t *testing.T) {
 		t.Fatalf("retry: status=%s spawned=%v", x.Status, fr.spawned)
 	}
 }
+
+func TestFinishedOutputSavedAndShownInDetails(t *testing.T) {
+	b := board.New("t")
+	x := b.Add("x")
+	b.MoveTo(x, board.StatusInProgress)
+	x.Agent, x.AgentPod, x.AgentStatus = "claude", "pod-x", board.AgentRunning
+	st := &memStore{b: b}
+	m := newModel(b, st, Options{Agents: &fakeRunner{}})
+	m.width, m.height = 100, 30
+
+	run(m, m.applyStatuses(map[string]board.AgentStatus{"pod-x": board.AgentCompleted}))
+	if x.Status != board.StatusReview || x.AgentOutput != "hello\nworld" {
+		t.Fatalf("status=%s output=%q", x.Status, x.AgentOutput)
+	}
+	m.selectTicket(x)
+	m.Update(key("enter"))
+	v := ansi.Strip(m.View().Content)
+	if m.mode != modeDetail || !strings.Contains(v, "Agent output") || !strings.Contains(v, "world") {
+		t.Fatalf("details:\n%s", v)
+	}
+	m.Update(key("j")) // scrolling stays in the details
+	if m.mode != modeDetail {
+		t.Fatal("j left the details")
+	}
+	m.Update(key("q"))
+	if m.mode != modeBoard {
+		t.Fatal("q should go back")
+	}
+}

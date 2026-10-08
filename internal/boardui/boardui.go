@@ -79,6 +79,10 @@ type (
 		err      error
 	}
 	attachDoneMsg struct{ err error }
+	outputMsg     struct {
+		ticketID, text string
+		err            error
+	}
 )
 
 type confirmKind int
@@ -158,11 +162,12 @@ func (m *model) findTicket(id string) *board.Ticket {
 }
 
 // applyStatuses updates the tickets' agent state from their pods.
-func (m *model) applyStatuses(st map[string]board.AgentStatus) {
+func (m *model) applyStatuses(st map[string]board.AgentStatus) tea.Cmd {
 	if st == nil {
-		return
+		return nil
 	}
 	changed := false
+	var cmds []tea.Cmd
 	for _, t := range m.b.Tickets {
 		if t.AgentPod == "" {
 			continue
@@ -180,6 +185,9 @@ func (m *model) applyStatuses(st map[string]board.AgentStatus) {
 			target := map[board.AgentStatus]board.Status{
 				board.AgentCompleted: board.StatusReview, board.AgentError: board.StatusBlocked,
 			}[s]
+			if target != "" {
+				cmds = append(cmds, m.captureCmd(t)) // keep the output with the ticket
+			}
 			if target != "" && t.Status == board.StatusInProgress {
 				wasSelected := m.selected() == t
 				if m.b.MoveTo(t, target) == nil {
@@ -195,6 +203,22 @@ func (m *model) applyStatuses(st map[string]board.AgentStatus) {
 		if err := m.store.Save(m.b); err != nil {
 			m.err = "save failed: " + err.Error()
 		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// maxSavedOutput caps the agent output kept in the board file.
+const maxSavedOutput = 64 << 10
+
+// captureCmd fetches the finished agent's output to save it on the ticket.
+func (m *model) captureCmd(t *board.Ticket) tea.Cmd {
+	if m.opts.Agents == nil || t.AgentPod == "" {
+		return nil
+	}
+	agents, ctx, id, pod := m.opts.Agents, m.ctx, t.ID, t.AgentPod
+	return func() tea.Msg {
+		text, err := agents.Logs(ctx, pod, 2000)
+		return outputMsg{ticketID: id, text: text, err: err}
 	}
 }
 
@@ -294,7 +318,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.SetHeight(m.logsHeight())
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.mode == modeLogs {
+		if m.mode == modeLogs || m.mode == modeDetail {
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
 			return m, cmd
@@ -303,12 +327,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollMsg:
 		return m, m.pollCmd()
 	case statusMsg:
-		m.applyStatuses(msg.statuses)
+		capture := m.applyStatuses(msg.statuses)
 		next := tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
 		if m.mode == modeLogs {
-			return m, tea.Batch(next, m.logsCmd(m.logsPod)) // follow the output
+			return m, tea.Batch(next, capture, m.logsCmd(m.logsPod)) // follow the output
 		}
-		return m, next
+		return m, tea.Batch(next, capture)
+	case outputMsg:
+		t := m.findTicket(msg.ticketID)
+		if t == nil || msg.err != nil {
+			return m, nil // keep whatever was saved before
+		}
+		out := strings.TrimRight(msg.text, "\n")
+		if len(out) > maxSavedOutput {
+			out = "…\n" + out[len(out)-maxSavedOutput:]
+		}
+		t.AgentOutput = out
+		if err := m.store.Save(m.b); err != nil {
+			m.err = "save failed: " + err.Error()
+		}
+		if m.mode == modeDetail && m.selected() == t {
+			m.openDetail()
+		}
+		return m, nil
 	case spawnedMsg:
 		t := m.findTicket(msg.ticketID)
 		if t == nil {
@@ -397,14 +438,28 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg) // j/k, arrows, pgup/pgdn, space/b, u/d
 			return m, cmd
-		case modeDetail, modeHelp:
+		case modeDetail:
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
 			case "e":
-				if m.mode == modeDetail {
-					return m.startInput(inputDescription)
-				}
+				return m.startInput(inputDescription)
+			case "q", "esc", "enter":
+				m.mode = modeBoard
+				return m, nil
+			case "g", "home":
+				m.vp.GotoTop()
+				return m, nil
+			case "G", "end":
+				m.vp.GotoBottom()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.vp, cmd = m.vp.Update(msg)
+			return m, cmd
+		case modeHelp:
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
 			}
 			m.mode = modeBoard
 			return m, nil
@@ -465,6 +520,11 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if t != nil {
 			m.mode = modeDetail
+			m.openDetail()
+			// Finished before its output was saved (e.g. by an older version)?
+			if t.AgentOutput == "" && (t.AgentStatus == board.AgentCompleted || t.AgentStatus == board.AgentError) {
+				return m, m.captureCmd(t)
+			}
 		}
 	case "s":
 		if t != nil {
@@ -563,6 +623,7 @@ func (m *model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				t.Touch()
 				m.save("description updated")
 				m.mode = modeDetail
+				m.openDetail()
 			}
 		}
 		return m, nil
@@ -610,7 +671,8 @@ func (m *model) View() tea.View {
 	var body string
 	switch m.mode {
 	case modeDetail:
-		body = m.detailView()
+		m.vp.SetHeight(bodyH)
+		body = m.vp.View()
 	case modeHelp:
 		body = helpText
 	case modeLogs:
@@ -629,7 +691,7 @@ func (m *model) View() tea.View {
 	b.WriteString("\n" + footer)
 	v := tea.NewView(b.String())
 	v.AltScreen = true
-	if m.mode == modeLogs {
+	if m.mode == modeLogs || m.mode == modeDetail {
 		// Wheel events; Termux turns touch swipes into them.
 		v.MouseMode = tea.MouseModeCellMotion
 	}
@@ -682,7 +744,7 @@ func (m *model) footer() string {
 	case modeConfirm:
 		return subtle.Render("y confirm · any other key cancel")
 	case modeDetail:
-		return subtle.Render("e edit description · any key back")
+		return subtle.Render(fmt.Sprintf("%3.0f%% · j/k pgup/pgdn scroll (touch/wheel too) · g/G top/end · e edit description · q back", m.vp.ScrollPercent()*100))
 	case modeHelp:
 		return subtle.Render("any key back")
 	case modeLogs:
@@ -831,7 +893,15 @@ func orDash(s string) string {
 	return s
 }
 
-func (m *model) detailView() string {
+// openDetail fills the viewport with the selected ticket's details and its
+// saved agent output.
+func (m *model) openDetail() {
+	m.vp = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(m.logsHeight()))
+	m.vp.SoftWrap = true
+	m.vp.SetContent(m.detailText())
+}
+
+func (m *model) detailText() string {
 	t := m.selected()
 	if t == nil {
 		return ""
@@ -856,7 +926,16 @@ func (m *model) detailView() string {
 	if desc == "" {
 		desc = subtle.Render("(no description — press e to add one)")
 	}
-	b.WriteString("\n" + lipgloss.NewStyle().Width(max(m.width-2, 20)).Render(desc) + "\n")
+	b.WriteString("\n" + desc + "\n")
+
+	switch {
+	case t.AgentOutput != "":
+		b.WriteString("\n" + titleStyle.Render("Agent output") + "\n" + t.AgentOutput + "\n")
+	case t.AgentStatus == board.AgentRunning || t.AgentStatus == board.AgentWaiting:
+		b.WriteString("\n" + subtle.Render("Agent is running — its output is saved here when it finishes (o shows it live).") + "\n")
+	case t.AgentStatus == board.AgentCompleted || t.AgentStatus == board.AgentError:
+		b.WriteString("\n" + subtle.Render("Fetching the agent output…") + "\n")
+	}
 	return b.String()
 }
 

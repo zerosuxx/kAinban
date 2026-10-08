@@ -101,7 +101,9 @@ headless with the ticket title and description as the prompt (`claude -p`,
 `codex exec`, `copilot -p`, `agy -p`; their own sandboxes are off, the pod is
 the sandbox) and gets only that agent's credentials plus `GH_TOKEN`. The board
 polls the pods every 5 s for the agent state and moves a ticket to Review when
-its agent finishes successfully, to Blocked when it fails. `o` shows the agent's output, following new
+its agent finishes successfully, to Blocked when it fails; the tail of the
+agent's output (up to 64 KB) is then saved with the ticket and shown, scrollable,
+in the details (`enter`), even after the pod is gone. `o` shows the agent's output, following new
 lines while you are at the end; scroll it with `j/k`, `pgup/pgdn`, `g/G`, the
 mouse wheel or touch swipes (Termux). `x` stops the agent after a y/N confirmation (deletes its pod with its
 `/work` and session), deleting a ticket stops its agent.

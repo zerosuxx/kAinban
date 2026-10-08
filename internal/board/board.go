@@ -75,9 +75,12 @@ type Ticket struct {
 	AgentStatus AgentStatus `json:"agent_status"`
 	AgentPod    string      `json:"agent_pod,omitempty"` // pod running the agent
 	AgentRun    AgentType   `json:"agent_run,omitempty"` // agent actually started (resolves auto)
-	Branch      string      `json:"branch,omitempty"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	// AgentOutput is the tail of the agent's output, saved when it finished
+	// so it outlives the pod.
+	AgentOutput string    `json:"agent_output,omitempty"`
+	Branch      string    `json:"branch,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Board is the whole state persisted by a Store.
