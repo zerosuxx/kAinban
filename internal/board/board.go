@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -99,6 +100,7 @@ func (r *Run) SetStatus(s AgentStatus) {
 // Ticket is one card.
 type Ticket struct {
 	ID          string    `json:"id"`
+	Key         string    `json:"key"` // human-readable, e.g. KAI-12
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"`
 	Status      Status    `json:"status"`
@@ -187,28 +189,44 @@ type PodState struct {
 
 // Board is the whole state persisted by a Store.
 type Board struct {
-	Name    string    `json:"name"`
-	Columns []Column  `json:"columns"`
-	Tickets []*Ticket `json:"tickets"`
+	Name string `json:"name"`
+	// Project is the key prefix of the tickets (KAI in KAI-12).
+	Project    string    `json:"project"`
+	NextNumber int       `json:"next_number"` // never reused, even after deletes
+	Columns    []Column  `json:"columns"`
+	Tickets    []*Ticket `json:"tickets"`
 }
+
+// DefaultProject is the ticket key prefix of a board created without one.
+const DefaultProject = "KAI"
 
 // New returns an empty board with the default columns.
 func New(name string) *Board {
-	return &Board{Name: name, Columns: DefaultColumns(), Tickets: []*Ticket{}}
+	return &Board{Name: name, Project: DefaultProject, NextNumber: 1, Columns: DefaultColumns(), Tickets: []*Ticket{}}
+}
+
+// NormalizeProject turns a project ID into a ticket key prefix ("kai" -> "KAI").
+func NormalizeProject(p string) string {
+	return strings.ToUpper(strings.TrimSpace(p))
 }
 
 var now = time.Now
 
 // Add creates a ticket in the first column.
 func (b *Board) Add(title string) *Ticket {
+	if b.NextNumber < 1 {
+		b.NextNumber = 1
+	}
 	t := &Ticket{
 		ID:        newID(),
+		Key:       fmt.Sprintf("%s-%d", b.Project, b.NextNumber),
 		Title:     title,
 		Status:    b.Columns[0].Status,
 		Priority:  3,
 		CreatedAt: now().UTC(),
 	}
 	t.UpdatedAt = t.CreatedAt
+	b.NextNumber++
 	b.Tickets = append(b.Tickets, t)
 	return t
 }
@@ -283,6 +301,24 @@ func (b *Board) Migrate() {
 	b.EnsureDefaultColumns()
 	for _, t := range b.Tickets {
 		t.migrateLegacy()
+	}
+	if b.Project == "" {
+		b.Project = DefaultProject
+	}
+	if b.NextNumber < 1 {
+		b.NextNumber = 1
+	}
+	// Tickets from before keys existed get numbers in creation order.
+	var unkeyed []*Ticket
+	for _, t := range b.Tickets {
+		if t.Key == "" {
+			unkeyed = append(unkeyed, t)
+		}
+	}
+	slices.SortStableFunc(unkeyed, func(x, y *Ticket) int { return x.CreatedAt.Compare(y.CreatedAt) })
+	for _, t := range unkeyed {
+		t.Key = fmt.Sprintf("%s-%d", b.Project, b.NextNumber)
+		b.NextNumber++
 	}
 }
 

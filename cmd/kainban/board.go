@@ -16,12 +16,12 @@ import (
 // runBoard shows the kanban board stored in path (default: board.json in the
 // state directory, i.e. on the orchestrator's PVC). Agents can be started
 // when the cluster and the agent image (set by the Helm chart) are known.
-func runBoard(ctx context.Context, cf commonFlags, path string, stderr io.Writer) int {
+func runBoard(ctx context.Context, cf commonFlags, path, project string, stderr io.Writer) int {
 	if path == "" {
 		home, _ := os.UserHomeDir()
 		path = filepath.Join(stateDir(home), "board.json")
 	}
-	opts := boardui.Options{AppVersion: appVersion, Location: path}
+	opts := boardui.Options{AppVersion: appVersion, Location: path, Project: project}
 	if t, err := cf.connect(); err != nil {
 		opts.AgentsErr = err.Error()
 	} else if cfg, err := agent.FromEnv(t.Namespace); err != nil {

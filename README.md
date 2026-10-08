@@ -89,6 +89,12 @@ branch. `h/l` `j/k` navigate, `space`/`L` and `H` move a card, `n` new,
 `~/.local/state/kainban/board.json` (on the PVC when persistence is enabled;
 `--file` overrides).
 
+Tickets have keys like `KAI-12`: the board's project prefix (default `KAI`,
+`kainban board --project XY` for a new board) and a number that is never
+reused. The key is on the card, in the details, in the agent's prompt
+(`Task KAI-12: …`), in `KAINBAN_TICKET_KEY` and in the pod label
+`kainban.io/ticket-key`.
+
 `a` cycles the agent: `auto` (the orchestrator picks when the agent starts;
 for now the first of claude, codex, copilot, antigravity with credentials,
 later agent profiles; the card then shows e.g. `auto→claude`), or a fixed one.

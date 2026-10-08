@@ -19,6 +19,7 @@ import (
 
 // Options configures Run.
 type Options struct {
+	Project    string // ticket key prefix for a new board (e.g. KAI)
 	AppVersion string
 	Location   string      // where the board is stored, shown in the header
 	Agents     AgentRunner // nil: agents unavailable (not in the cluster)
@@ -33,10 +34,27 @@ func Run(ctx context.Context, store board.Store, opts Options) error {
 	if err != nil {
 		return err
 	}
+	if err := applyProject(b, store, opts.Project); err != nil {
+		return err
+	}
 	m := newModel(b, store, opts)
 	m.ctx = ctx
 	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
+}
+
+// applyProject sets the ticket key prefix of a board that has no tickets
+// yet; an existing board keeps its prefix so keys stay consistent.
+func applyProject(b *board.Board, store board.Store, project string) error {
+	p := board.NormalizeProject(project)
+	if p == "" || p == b.Project {
+		return nil
+	}
+	if len(b.Tickets) > 0 || b.NextNumber > 1 {
+		return fmt.Errorf("the board already uses project %s (tickets %s-N); --project only applies to a new board", b.Project, b.Project)
+	}
+	b.Project = p
+	return store.Save(b)
 }
 
 type mode int
@@ -416,7 +434,7 @@ func (m *model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if v != "" {
 				t := m.b.Add(v)
 				m.selectTicket(t)
-				m.save("created " + v)
+				m.save("created " + t.Key + " " + v)
 			}
 		case inputTitle:
 			if t := m.selected(); t != nil && v != "" {
@@ -460,7 +478,7 @@ func (m *model) View() tea.View {
 	if m.opts.AppVersion != "" {
 		head += " " + subtle.Render(m.opts.AppVersion)
 	}
-	head += titleStyle.Render(" · board")
+	head += titleStyle.Render(" · board " + m.b.Project)
 	if m.opts.Location != "" {
 		head += subtle.Render("  " + m.opts.Location)
 	}
@@ -646,7 +664,11 @@ func joinWithGap(cols []string) []string {
 
 func (m *model) card(t *board.Ticket, c board.Column, w int, selected bool) string {
 	inner := max(w-4, 8) // border + padding
-	title := ansi.Truncate(t.Title, inner, "…")
+	title := t.Title
+	if t.Key != "" {
+		title = t.Key + " " + t.Title
+	}
+	title = ansi.Truncate(title, inner, "…")
 	border := dimBorder
 	if selected {
 		border = lipgloss.Color(c.Color)
@@ -726,6 +748,7 @@ func (m *model) detailText() string {
 	}
 	col := m.b.Columns[m.b.ColumnIndex(t.Status)]
 	rows := [][2]string{
+		{"Key", orDash(t.Key)},
 		{"Title", t.Title},
 		{"Status", col.Name},
 		{"Priority", fmt.Sprintf("P%d", t.Priority)},

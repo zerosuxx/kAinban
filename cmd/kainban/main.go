@@ -26,7 +26,8 @@ const usage = `Usage:
   kainban auth [flags]          interactive credential setup (TUI)
   kainban auth check [flags]    check credentials non-interactively
   kainban board [flags]         kanban board, s starts a ticket's agent pod
-                                (alias: kanban; --file PATH for the board file)
+                                (alias: kanban; --file PATH for the board file,
+                                --project XY for a new board's ticket keys XY-1, XY-2)
   kainban shell [flags]         start a shell with the stored credentials
   kainban run [flags] -- CMD    run CMD with the stored credentials
   kainban version               print the version
@@ -111,13 +112,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs := newFlagSet(args[0])
 		cf.register(fs)
 		file := fs.String("file", "", "board file")
+		project := fs.String("project", "", "ticket key prefix of a new board")
 		if err := fs.Parse(args[1:]); err != nil {
 			return bad("%v", err)
 		}
 		if fs.NArg() > 0 {
 			return bad("unexpected arguments: %v", fs.Args())
 		}
-		return runBoard(ctx, cf, *file, stderr)
+		return runBoard(ctx, cf, *file, *project, stderr)
 	case "shell", "run":
 		var cf commonFlags
 		fs := newFlagSet(args[0])

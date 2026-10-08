@@ -75,7 +75,7 @@ func TestViewShowsColumnsAndCards(t *testing.T) {
 	x.Runs = []*board.Run{{Agent: "claude", Pod: "p", Status: board.AgentRunning}}
 	b.Move(x, 2)
 	m := newModel(b, &memStore{b: b}, Options{AppVersion: "1.2.3"})
-	m.width, m.height = 150, 30
+	m.width, m.height = 190, 30
 	v := ansi.Strip(m.View().Content)
 	for _, want := range []string{"Backlog", "In Progress", "Review", "Done", "Blocked", "Write the orchestrator", "Review PR #12", "1.2.3"} {
 		if !strings.Contains(v, want) {
@@ -510,5 +510,28 @@ func TestDetailsScrollAndBack(t *testing.T) {
 	m.Update(key("q"))
 	if m.mode != modeBoard {
 		t.Fatal("q should go back")
+	}
+}
+
+func TestProjectKeys(t *testing.T) {
+	b := board.New("t")
+	st := &memStore{b: b}
+	if err := applyProject(b, st, "xy"); err != nil || b.Project != "XY" {
+		t.Fatalf("new board: %v %s", err, b.Project)
+	}
+	x := b.Add("Fix login")
+	if x.Key != "XY-1" {
+		t.Fatalf("key %s", x.Key)
+	}
+	if err := applyProject(b, st, "ab"); err == nil {
+		t.Fatal("changing the project of a board with tickets should fail")
+	}
+	if err := applyProject(b, st, "xy"); err != nil {
+		t.Fatal("same project should be fine")
+	}
+	m := newModel(b, st, Options{})
+	m.width, m.height = 140, 30
+	if v := ansi.Strip(m.View().Content); !strings.Contains(v, "XY-1 Fix login") || !strings.Contains(v, "board XY") {
+		t.Fatalf("card/header should show the key:\n%s", v)
 	}
 }

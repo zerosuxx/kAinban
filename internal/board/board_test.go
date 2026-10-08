@@ -143,3 +143,36 @@ func TestRunHelpers(t *testing.T) {
 		t.Fatal("finish not recorded")
 	}
 }
+
+func TestTicketKeys(t *testing.T) {
+	b := New("t")
+	a, c := b.Add("a"), b.Add("b")
+	if a.Key != "KAI-1" || c.Key != "KAI-2" {
+		t.Fatalf("keys %s %s", a.Key, c.Key)
+	}
+	b.Delete(c)
+	if d := b.Add("c"); d.Key != "KAI-3" {
+		t.Fatalf("number reused after delete: %s", d.Key)
+	}
+	if NormalizeProject(" xy ") != "XY" {
+		t.Fatal("normalize")
+	}
+}
+
+func TestOldTicketsGetKeysInCreationOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	old := `{"name":"old","tickets":[
+	  {"id":"b","title":"second","status":"backlog","priority":3,"created_at":"2026-10-08T02:00:00Z"},
+	  {"id":"a","title":"first","status":"backlog","priority":3,"created_at":"2026-10-08T01:00:00Z"}]}`
+	os.WriteFile(path, []byte(old), 0o600)
+	b, err := FileStore{Path: path}.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Project != DefaultProject || b.Tickets[1].Key != "KAI-1" || b.Tickets[0].Key != "KAI-2" || b.NextNumber != 3 {
+		t.Fatalf("project=%s keys=%s,%s next=%d", b.Project, b.Tickets[0].Key, b.Tickets[1].Key, b.NextNumber)
+	}
+	if n := b.Add("third"); n.Key != "KAI-3" {
+		t.Fatalf("next key %s", n.Key)
+	}
+}

@@ -34,7 +34,7 @@ func TestSpawnOnlyMountsTheTicketsAgentCredentials(t *testing.T) {
 	}
 	all := []string{"CLAUDE_CODE_OAUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GEMINI_API_KEY"}
 	for ag, want := range cases {
-		tk := &board.Ticket{ID: "t1", Title: "Do it", Description: "details", Agent: ag}
+		tk := &board.Ticket{ID: "t1", Key: "KAI-7", Title: "Do it", Description: "details", Agent: ag}
 		name, got, err := r.Spawn(ctx, tk)
 		if err != nil {
 			t.Fatal(err)
@@ -64,7 +64,7 @@ func TestSpawnOnlyMountsTheTicketsAgentCredentials(t *testing.T) {
 		if _, ok := env["GH_TOKEN"]; !ok {
 			t.Errorf("%s: GH_TOKEN missing", ag)
 		}
-		if env["KAINBAN_PROMPT"].Value != "Task: Do it\n\ndetails" {
+		if env["KAINBAN_PROMPT"].Value != "Task KAI-7: Do it\n\ndetails" || env["KAINBAN_TICKET_KEY"].Value != "KAI-7" || p.Labels[LabelTicketKey] != "KAI-7" {
 			t.Errorf("%s: prompt %q", ag, env["KAINBAN_PROMPT"].Value)
 		}
 		for _, v := range p.Spec.Volumes {

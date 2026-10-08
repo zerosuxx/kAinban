@@ -24,6 +24,7 @@ const (
 	LabelComponent = "app.kubernetes.io/component"
 	ComponentAgent = "agent"
 	LabelTicket    = "kainban.io/ticket"
+	LabelTicketKey = "kainban.io/ticket-key"
 	LabelAgent     = "kainban.io/agent"
 )
 
@@ -255,12 +256,15 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
 fi
 if [ -n "${GH_TOKEN:-}" ]; then gh auth setup-git >/dev/null 2>&1 || true; fi
 cd /work
-echo "kainban: ticket $KAINBAN_TICKET_ID, agent $KAINBAN_AGENT"
+echo "kainban: ticket $KAINBAN_TICKET_KEY ($KAINBAN_TICKET_ID), agent $KAINBAN_AGENT"
 `
 
 // Prompt is what the agent is asked to do for t.
 func Prompt(t *board.Ticket) string {
 	p := "Task: " + t.Title
+	if t.Key != "" {
+		p = "Task " + t.Key + ": " + t.Title
+	}
 	if d := strings.TrimSpace(t.Description); d != "" {
 		p += "\n\n" + d
 	}
@@ -279,6 +283,7 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 		{Name: "CLAUDE_CONFIG_DIR", Value: "/sessions/claude"},
 		{Name: "KAINBAN_PROMPT", Value: Prompt(t)},
 		{Name: "KAINBAN_TICKET_ID", Value: t.ID},
+		{Name: "KAINBAN_TICKET_KEY", Value: t.Key},
 		{Name: "KAINBAN_AGENT", Value: string(t.Agent)},
 		secretEnv("GH_TOKEN", auth.GitHubSecretName, auth.GitHubTokenKey),
 	}
@@ -322,6 +327,7 @@ func (r *Runner) podFor(t *board.Ticket) (*corev1.Pod, error) {
 				auth.LabelPartOf: auth.PartOfValue,
 				LabelComponent:   ComponentAgent,
 				LabelTicket:      t.ID,
+				LabelTicketKey:   t.Key,
 				LabelAgent:       string(t.Agent),
 				"role":           "agent",
 			},
