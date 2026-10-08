@@ -349,12 +349,12 @@ func (m *model) updateBoard(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		if t != nil {
 			t.CycleAgent()
-			m.save(fmt.Sprintf("%s: agent %s", t.Title, agentName(t.Agent)))
+			m.save(fmt.Sprintf("%s: agent %s", cardTitle(t), agentName(t.Agent)))
 		}
 	case "p":
 		if t != nil {
 			t.CyclePriority()
-			m.save(fmt.Sprintf("%s: priority P%d", t.Title, t.Priority))
+			m.save(fmt.Sprintf("%s: priority P%d", cardTitle(t), t.Priority))
 		}
 	case "d", "delete":
 		if t != nil {
@@ -420,11 +420,11 @@ func (m *model) move(t *board.Ticket, delta int) tea.Cmd {
 			return nil
 		}
 		m.selectTicket(t)
-		m.save(fmt.Sprintf("%s → Done, stopping its agent pods", t.Title))
+		m.save(fmt.Sprintf("%s → Done, stopping its agent pods", cardTitle(t)))
 		return m.stopRunsCmd(t, t.LiveRuns())
 	}
 	m.selectTicket(t)
-	m.save(fmt.Sprintf("%s → %s", t.Title, m.b.Columns[m.col].Name))
+	m.save(fmt.Sprintf("%s → %s", cardTitle(t), m.b.Columns[m.col].Name))
 	return nil
 }
 
@@ -604,13 +604,13 @@ func (m *model) confirmQuestion() string {
 	}
 	switch m.confirm {
 	case confirmStop:
-		return fmt.Sprintf("stop the agent of %q? Its pod, /work and session are deleted (the output is kept). y/N", t.Title)
+		return fmt.Sprintf("stop the agent of %q? Its pod, /work and session are deleted (the output is kept). y/N", cardTitle(t))
 	case confirmRestart:
-		return fmt.Sprintf("the agent of %q is still running. Stop it and start a new run? y/N", t.Title)
+		return fmt.Sprintf("the agent of %q is still running. Stop it and start a new run? y/N", cardTitle(t))
 	case confirmDone:
-		return fmt.Sprintf("the agent of %q is still running. Move to Done and stop it? y/N", t.Title)
+		return fmt.Sprintf("the agent of %q is still running. Move to Done and stop it? y/N", cardTitle(t))
 	}
-	q := fmt.Sprintf("delete %q?", t.Title)
+	q := fmt.Sprintf("delete %q?", cardTitle(t))
 	if len(t.LiveRuns()) > 0 {
 		q += " Its agent pods are stopped too."
 	}

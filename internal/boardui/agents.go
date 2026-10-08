@@ -127,7 +127,12 @@ func (m *model) applyStatuses(st map[string]board.PodState) tea.Cmd {
 				if wasSelected {
 					m.selectTicket(t) // the cursor follows the card
 				}
-				m.notice = t.Title + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent " + string(ps.Status) + ")"
+				msg := cardTitle(t) + " → " + m.b.Columns[m.b.ColumnIndex(t.Status)].Name + " (agent " + string(ps.Status) + ")"
+				if ps.Status == board.AgentError {
+					m.err = msg // a failed agent is an error, not a success
+				} else {
+					m.notice = msg
+				}
 			}
 		}
 	}
@@ -270,7 +275,7 @@ func (m *model) applyStopped(msg stoppedMsg) {
 		return
 	}
 	t.Touch()
-	m.save(fmt.Sprintf("stopped %d agent pod(s) of %s (output kept)", len(msg.results), t.Title))
+	m.save(fmt.Sprintf("stopped %d agent pod(s) of %s (output kept)", len(msg.results), cardTitle(t)))
 }
 
 // spawn starts a new run; a still-running agent is stopped first after
@@ -297,7 +302,7 @@ func (m *model) spawn(t *board.Ticket, force bool) (tea.Model, tea.Cmd) {
 	}
 	prev := t.LiveRuns()
 	run := t.StartRun()
-	m.save("starting " + string(t.Agent) + " for " + t.Title + "…")
+	m.save("starting " + string(t.Agent) + " for " + cardTitle(t) + "…")
 	agents, ctx, tc := m.opts.Agents, m.ctx, *t
 	pods, saved := livePods(prev)
 	return m, func() tea.Msg {
@@ -350,7 +355,7 @@ func (m *model) confirmed(t *board.Ticket) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectTicket(t)
-		m.save(t.Title + " → Done, stopping its agent pods")
+		m.save(cardTitle(t) + " → Done, stopping its agent pods")
 		return m, m.stopRunsCmd(t, t.LiveRuns())
 	default: // confirmDelete
 		var cmd tea.Cmd
@@ -362,7 +367,7 @@ func (m *model) confirmed(t *board.Ticket) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.b.Delete(t)
-		m.save("deleted " + t.Title)
+		m.save("deleted " + cardTitle(t))
 		return m, cmd
 	}
 }

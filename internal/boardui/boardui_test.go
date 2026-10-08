@@ -765,3 +765,20 @@ func TestDetailsPopupScrollsWithWheel(t *testing.T) {
 		os.WriteFile(os.Getenv("BOARD_SNAPSHOT"), []byte(ansi.Strip(m.View().Content)), 0o644)
 	}
 }
+
+func TestFailedAgentToastIsRedWithKey(t *testing.T) {
+	_, x, fr, m := agentBoard(t)
+	m.selectTicket(x)
+	_, cmd := m.Update(key("s"))
+	run(m, cmd)
+	fr.pods[x.Current().Pod] = board.PodState{Status: board.AgentError, Ticket: x.ID}
+	poll(m)
+	box := ansi.Strip(m.toastBox())
+	if !strings.Contains(box, "✗") || !strings.Contains(box, "KAI-1") || !strings.Contains(box, "Blocked") {
+		t.Fatalf("failed agent toast: %q", box)
+	}
+	m.Update(key("p"))
+	if box := ansi.Strip(m.toastBox()); !strings.Contains(box, "KAI-1") {
+		t.Fatalf("notices should name the ticket key: %q", box)
+	}
+}
