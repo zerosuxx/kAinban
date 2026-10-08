@@ -25,13 +25,19 @@ var appVersion = "dev"
 const usage = `Usage:
   kainban auth [flags]          interactive credential setup (TUI)
   kainban auth check [flags]    check credentials non-interactively
+  kainban shell [flags]         start a shell with the stored credentials
+  kainban run [flags] -- CMD    run CMD with the stored credentials
   kainban version               print the version
 
 Cluster selection: --kubeconfig or KUBECONFIG (or --context) uses the
 kubeconfig; otherwise the in-cluster service account when running in a pod;
 otherwise ~/.kube/config.
 
-Flags (auth and auth check):
+shell/run read the agent-facing Secrets at start (Claude, GitHub, Copilot,
+Gemini env vars; Codex auth.json without refresh token in a writable
+CODEX_HOME), so no pod restart is needed after kainban auth.
+
+Flags (auth, auth check, shell, run):
   --namespace NS     namespace for the Secrets (default: POD_NAMESPACE,
                      service account namespace, kubeconfig context, "default")
   --kubeconfig PATH  kubeconfig file
@@ -98,6 +104,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help", "-help":
 		fmt.Fprint(stdout, usage)
 		return 0
+	case "shell", "run":
+		var cf commonFlags
+		fs := newFlagSet(args[0])
+		cf.register(fs)
+		if err := fs.Parse(args[1:]); err != nil {
+			return bad("%v", err)
+		}
+		if args[0] == "shell" && fs.NArg() > 0 {
+			return bad("shell takes no arguments; use run -- CMD")
+		}
+		if args[0] == "run" && fs.NArg() == 0 {
+			return bad("run needs a command: kainban run -- CMD [ARGS]")
+		}
+		return runWithCredentials(ctx, cf, fs.Args(), stderr)
 	case "auth":
 	default:
 		return bad("unknown command %q", args[0])

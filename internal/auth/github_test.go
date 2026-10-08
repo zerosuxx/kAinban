@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -258,5 +259,56 @@ func TestCopilotPrefill(t *testing.T) {
 	s, err := f.Next(ctx, "")
 	if err != nil || s.Value != gho || strings.Contains(s.Body, gho) || !strings.Contains(s.Body, "Pre-filled") {
 		t.Fatalf("value=%q body=%q err=%v", s.Value, s.Body, err)
+	}
+}
+
+func TestGitHubDeviceLoginFlow(t *testing.T) {
+	orig := ghAuthToken
+	t.Cleanup(func() { ghAuthToken = orig })
+	ctx := context.Background()
+	gho := "gho_" + strings.Repeat("c", 36)
+
+	loggedIn := false
+	ghAuthToken = func(context.Context) string {
+		if loggedIn {
+			return gho
+		}
+		return ""
+	}
+	f := NewGitHub().NewFlow()
+	s, err := f.Next(ctx, "")
+	if err != nil || s.Kind != StepInput || s.Value != "" || !strings.Contains(s.Body, "gh auth login") {
+		t.Fatalf("first step: %+v %v", s, err)
+	}
+	// Empty input: hand out `gh auth login` with the env tokens cleared.
+	s, err = f.Next(ctx, "  ")
+	if err != nil || s.Kind != StepExec || s.Command[0] != "gh" || !slices.Contains(s.Env, "GH_TOKEN=") {
+		t.Fatalf("exec step: %+v %v", s, err)
+	}
+	loggedIn = true
+	s, err = f.Next(ctx, "")
+	if err != nil || s.Kind != StepInput || s.Value != gho || strings.Contains(s.Body, gho) {
+		t.Fatalf("after login: value=%q body=%q err=%v", s.Value, s.Body, err)
+	}
+	// After one login attempt an empty input is an error, not another login.
+	if _, err := f.Next(ctx, ""); err == nil {
+		t.Fatal("empty input after login should fail format check")
+	}
+
+	// Login that leaves no token: input step explains it.
+	loggedIn = false
+	f = NewGitHub().NewFlow()
+	f.Next(ctx, "")
+	f.Next(ctx, "")
+	s, _ = f.Next(ctx, "")
+	if s.Kind != StepInput || s.Value != "" || !strings.Contains(s.Body, "did not leave a token") {
+		t.Fatalf("failed login: %+v", s)
+	}
+
+	// Already logged in: pre-filled right away.
+	loggedIn = true
+	s, _ = NewGitHub().NewFlow().Next(ctx, "")
+	if s.Value != gho {
+		t.Fatalf("prefill: %q", s.Value)
 	}
 }

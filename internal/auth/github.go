@@ -40,6 +40,9 @@ type gitHubTokenProvider struct {
 	// prefill, if set, proposes a token for the input (source describes
 	// where it came from); store may be nil.
 	prefill func(ctx context.Context, store Store) (tok, source string)
+	// deviceLogin lets an empty input run `gh auth login` (device flow) and
+	// then pre-fill its token.
+	deviceLogin bool
 }
 
 // NewGitHub returns the GitHub provider (GH_TOKEN for git/gh).
@@ -63,7 +66,17 @@ func newGitHub(client *http.Client, baseURL string) *gitHubTokenProvider {
 		placeholder: "github_pat_...",
 		client:      client,
 		baseURL:     baseURL,
+		prefill:     gitHubCLIPrefill,
+		deviceLogin: true,
 	}
+}
+
+// gitHubCLIPrefill proposes the token of a logged-in gh CLI.
+func gitHubCLIPrefill(ctx context.Context, _ Store) (string, string) {
+	if tok := ghAuthToken(ctx); strings.HasPrefix(tok, "gho_") {
+		return tok, "`gh auth token`"
+	}
+	return "", ""
 }
 
 func (p *gitHubTokenProvider) ID() string            { return p.id }
@@ -191,10 +204,17 @@ func (p *gitHubTokenProvider) Check(ctx context.Context, store Store, live bool)
 }
 
 type gitHubTokenFlow struct {
-	p       *gitHubTokenProvider
-	store   Store
-	started bool
+	p          *gitHubTokenProvider
+	store      Store
+	started    bool
+	awaitLogin bool // StepExec `gh auth login` was handed out
+	loggedIn   bool // ... and has run
 }
+
+// ghLoginCommand signs gh in with the device flow (one-time code, no
+// callback). GH_TOKEN/GITHUB_TOKEN are cleared: gh refuses to log in while
+// they are set (e.g. inside `kainban shell`).
+var ghLoginCommand = []string{"gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"}
 
 func (f *gitHubTokenFlow) UseStore(s Store) { f.store = s }
 
@@ -203,24 +223,29 @@ func (f *gitHubTokenFlow) Close() error { return nil }
 func (f *gitHubTokenFlow) Next(ctx context.Context, input string) (Step, error) {
 	if !f.started {
 		f.started = true
-		step := Step{
-			Kind:        StepInput,
-			Title:       f.p.inputTitle,
-			Body:        f.p.inputBody,
-			Prompt:      "Token",
-			Placeholder: f.p.placeholder,
-			Secret:      true,
-		}
-		if f.p.prefill != nil {
-			if tok, source := f.p.prefill(ctx, f.store); tok != "" {
-				step.Value = tok
-				step.Body = "Pre-filled with the token from " + source + " (…" + tok[len(tok)-4:] +
-					"). Press Enter to use it, or paste another one.\n\n" + step.Body
-			}
+		return f.inputStep(ctx), nil
+	}
+	if f.awaitLogin {
+		f.awaitLogin, f.loggedIn = false, true
+		step := f.inputStep(ctx)
+		if step.Value == "" {
+			step.Body = "`gh auth login` did not leave a token (`gh auth token` is empty); paste one instead.\n\n" + step.Body
 		}
 		return step, nil
 	}
 	tok := normalizeToken(input)
+	if tok == "" && f.p.deviceLogin && !f.loggedIn {
+		f.awaitLogin = true
+		return Step{
+			Kind:  StepExec,
+			Title: f.p.title + ": sign in with gh",
+			Body: "kAinban will run `gh auth login`. It prints a one-time code: open https://github.com/login/device " +
+				"in your browser, enter the code and authorize GitHub CLI. The token is then filled in for you.\n\n" +
+				"Note: this OAuth token (gho_) can access all your repositories.",
+			Command: ghLoginCommand,
+			Env:     []string{"GH_TOKEN=", "GITHUB_TOKEN="},
+		}, nil
+	}
 	if err := f.p.checkFormat(tok); err != nil {
 		return Step{}, err
 	}
@@ -248,4 +273,28 @@ func (f *gitHubTokenFlow) Next(ctx context.Context, input string) (Step, error) 
 			f.p.secretName: {Data: map[string][]byte{f.p.key: []byte(tok)}, Annotations: ann},
 		},
 	}, nil
+}
+
+// inputStep asks for the token, pre-filled when a prefill source has one.
+func (f *gitHubTokenFlow) inputStep(ctx context.Context) Step {
+	step := Step{
+		Kind:        StepInput,
+		Title:       f.p.inputTitle,
+		Body:        f.p.inputBody,
+		Prompt:      "Token",
+		Placeholder: f.p.placeholder,
+		Secret:      true,
+	}
+	if f.p.prefill != nil {
+		if tok, source := f.p.prefill(ctx, f.store); tok != "" {
+			step.Value = tok
+			step.Body = "Pre-filled with the token from " + source + " (…" + tok[len(tok)-4:] +
+				"). Press Enter to use it, or paste another one.\n\n" + step.Body
+			return step
+		}
+	}
+	if f.p.deviceLogin && !f.loggedIn {
+		step.Body += "\n\nOr leave it empty and press Enter to sign in with `gh auth login` (GitHub device flow)."
+	}
+	return step
 }

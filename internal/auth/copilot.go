@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ func newCopilot(client *http.Client, baseURL string) *gitHubTokenProvider {
 		client:      client,
 		baseURL:     baseURL,
 		prefill:     copilotPrefill,
+		deviceLogin: true,
 	}
 }
 
@@ -46,7 +48,10 @@ func newCopilot(client *http.Client, baseURL string) *gitHubTokenProvider {
 var ghAuthToken = func(ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
+	// The stored login, not GH_TOKEN (which gh would just echo back).
+	cmd.Env = append(os.Environ(), "GH_TOKEN=", "GITHUB_TOKEN=")
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

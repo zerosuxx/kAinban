@@ -33,7 +33,7 @@ of them in order, or pick one; `ctrl+s` skips the current step. Providers:
 | --- | --- |
 | Claude Code | `claude setup-token` runs in the pod; open the printed URL, approve, paste the code back. kAinban captures the printed token and pre-fills it. |
 | Codex | Browser login with a manually pasted callback URL (see below). |
-| GitHub | Paste a fine-grained personal access token. |
+| GitHub | Paste a fine-grained personal access token, or leave it empty to run `gh auth login` (device flow: one-time code, no callback) and use its token. |
 | GitHub Copilot CLI | Pre-filled with the GitHub CLI OAuth token (`gho_`, from `gh auth token` or the `kainban-github` Secret) when available; otherwise paste a fine-grained token with *Copilot Requests*. |
 | Antigravity / Gemini | Paste a Gemini API key. |
 
@@ -77,6 +77,19 @@ All Secrets live in the release namespace.
 | `kainban-github` | `GH_TOKEN` | `gh` / git in agents |
 | `kainban-copilot` | `COPILOT_GITHUB_TOKEN` | GitHub Copilot CLI agents |
 | `kainban-antigravity` | `GEMINI_API_KEY` | Antigravity / Gemini agents |
+
+### Using the credentials in the orchestrator pod
+
+`kainban shell` starts a shell and `kainban run -- CMD` runs a command with the
+stored credentials, read from the Secrets at start (so no restart is needed
+after `kainban auth`): the same set an agent gets, i.e. Codex uses the
+refresh-token-less `auth.json` in a writable `CODEX_HOME`, so nothing in the
+pod can rotate the orchestrator's refresh token.
+
+```shell
+kubectl -n kainban exec -it deploy/kainban -- kainban shell
+kubectl -n kainban exec -it deploy/kainban -- kainban run -- claude
+```
 
 ### Test agent
 
